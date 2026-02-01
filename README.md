@@ -1,8 +1,8 @@
 # OpenUsage
 
-A re-imagined menu bar app for tracking AI coding tool subscriptions like Cursor, Claude, Codexand more all in one place.
+A re-imagined menu bar app for tracking AI coding tool subscriptions like Cursor, Claude, Codexand more all in one place. Inspired by [CodexBar](https://github.com/steipete/CodexBar) by [@steipete](https://github.com/steipete).
 
-Inspired by [CodexBar](https://github.com/steipete/CodexBar) by [@steipete](https://github.com/steipete). Same idea, different approach:
+Same idea, very different approach:
 
 - **Plugin architecture** — add/update providers without waiting on maintainers
 - **Cross-platform** — Tauri instead of native Swift
