@@ -26,7 +26,7 @@ OpenUsage lives in your menu bar and shows you how much of your AI coding subscr
 - [**Antigravity**](docs/providers/antigravity.md) / all models
 - [**Claude**](docs/providers/claude.md) / session, weekly, extra usage
 - [**Codex**](docs/providers/codex.md) / session, weekly, reviews, credits
-- [**Copilot**](docs/providers/copilot.md) / premium, chat, completions
+- [**Copilot**](docs/providers/copilot.md) / premium, budget, chat, completions
 - [**Cursor**](docs/providers/cursor.md) / credits, plan usage, on-demand
 - [**Gemini**](docs/providers/gemini.md) / pro, flash, workspace/free/paid tier
 - [**Kimi Code**](docs/providers/kimi.md) / session, weekly

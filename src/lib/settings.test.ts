@@ -4,6 +4,7 @@ import {
   DEFAULT_DISPLAY_MODE,
   DEFAULT_PLUGIN_SETTINGS,
   DEFAULT_RESET_TIMER_DISPLAY_MODE,
+  DEFAULT_COPILOT_BUDGET_USD,
   DEFAULT_START_ON_LOGIN,
   DEFAULT_TRAY_ICON_STYLE,
   DEFAULT_TRAY_SHOW_PERCENTAGE,
@@ -11,6 +12,7 @@ import {
   arePluginSettingsEqual,
   getEnabledPluginIds,
   loadAutoUpdateInterval,
+  loadCopilotBudgetUsd,
   loadDisplayMode,
   loadPluginSettings,
   loadResetTimerDisplayMode,
@@ -20,6 +22,7 @@ import {
   loadThemeMode,
   normalizePluginSettings,
   saveAutoUpdateInterval,
+  saveCopilotBudgetUsd,
   saveDisplayMode,
   savePluginSettings,
   saveResetTimerDisplayMode,
@@ -238,5 +241,24 @@ describe("settings", () => {
   it("falls back to default for invalid start on login value", async () => {
     storeState.set("startOnLogin", "invalid")
     await expect(loadStartOnLogin()).resolves.toBe(DEFAULT_START_ON_LOGIN)
+  })
+
+  it("loads default copilot budget when missing", async () => {
+    await expect(loadCopilotBudgetUsd()).resolves.toBe(DEFAULT_COPILOT_BUDGET_USD)
+  })
+
+  it("loads stored copilot budget", async () => {
+    storeState.set("copilotBudgetUsd", 55)
+    await expect(loadCopilotBudgetUsd()).resolves.toBe(55)
+  })
+
+  it("saves copilot budget", async () => {
+    await saveCopilotBudgetUsd(42.5)
+    await expect(loadCopilotBudgetUsd()).resolves.toBe(42.5)
+  })
+
+  it("falls back to default for invalid copilot budget", async () => {
+    storeState.set("copilotBudgetUsd", "invalid")
+    await expect(loadCopilotBudgetUsd()).resolves.toBe(DEFAULT_COPILOT_BUDGET_USD)
   })
 })

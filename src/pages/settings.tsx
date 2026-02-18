@@ -15,6 +15,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useEffect, useState } from "react";
 import { GripVertical } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -279,6 +280,8 @@ interface SettingsPageProps {
   onGlobalShortcutChange: (value: GlobalShortcut) => void;
   startOnLogin: boolean;
   onStartOnLoginChange: (value: boolean) => void;
+  copilotBudgetUsd: number;
+  onCopilotBudgetUsdChange: (value: number) => void;
   providerIconUrl?: string;
 }
 
@@ -302,8 +305,16 @@ export function SettingsPage({
   onGlobalShortcutChange,
   startOnLogin,
   onStartOnLoginChange,
+  copilotBudgetUsd,
+  onCopilotBudgetUsdChange,
   providerIconUrl,
 }: SettingsPageProps) {
+  const [copilotBudgetInput, setCopilotBudgetInput] = useState(String(copilotBudgetUsd));
+
+  useEffect(() => {
+    setCopilotBudgetInput(String(copilotBudgetUsd));
+  }, [copilotBudgetUsd]);
+
   const percentageMandatory = isTrayPercentageMandatory(trayIconStyle);
   const trayShowPercentageChecked = percentageMandatory
     ? true
@@ -326,6 +337,17 @@ export function SettingsPage({
       const next = arrayMove(plugins, oldIndex, newIndex);
       onReorder(next.map((item) => item.id));
     }
+  };
+
+  const commitCopilotBudgetInput = () => {
+    const parsed = Number(copilotBudgetInput);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      const rounded = Math.round(parsed * 100) / 100;
+      setCopilotBudgetInput(String(rounded));
+      onCopilotBudgetUsdChange(rounded);
+      return;
+    }
+    setCopilotBudgetInput(String(copilotBudgetUsd));
   };
 
   return (
@@ -519,6 +541,34 @@ export function SettingsPage({
           />
           Start on login
         </label>
+      </section>
+      <section>
+        <h3 className="text-lg font-semibold mb-0">Copilot Budget</h3>
+        <p className="text-sm text-muted-foreground mb-2">
+          Fallback monthly budget used when GitHub billing API is unavailable
+        </p>
+        <div className="bg-muted/50 rounded-lg p-2">
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <span className="text-muted-foreground">$</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              value={copilotBudgetInput}
+              onChange={(event) => setCopilotBudgetInput(event.target.value)}
+              onBlur={commitCopilotBudgetInput}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
+              aria-label="Copilot budget in dollars"
+              className="w-28 rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <span className="text-muted-foreground">monthly</span>
+          </label>
+        </div>
       </section>
       <section>
         <h3 className="text-lg font-semibold mb-0">Plugins</h3>

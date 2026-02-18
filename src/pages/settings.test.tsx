@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { ReactNode } from "react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -63,6 +63,8 @@ const defaultProps = {
   onGlobalShortcutChange: vi.fn(),
   startOnLogin: false,
   onStartOnLoginChange: vi.fn(),
+  copilotBudgetUsd: 40,
+  onCopilotBudgetUsdChange: vi.fn(),
 }
 
 afterEach(() => {
@@ -299,5 +301,22 @@ describe("SettingsPage", () => {
     )
     await userEvent.click(screen.getByText("Start on login"))
     expect(onStartOnLoginChange).toHaveBeenCalledWith(true)
+  })
+
+  it("updates copilot budget input", async () => {
+    const onCopilotBudgetUsdChange = vi.fn()
+    render(
+      <SettingsPage
+        {...defaultProps}
+        onCopilotBudgetUsdChange={onCopilotBudgetUsdChange}
+      />
+    )
+
+    const input = screen.getByLabelText("Copilot budget in dollars")
+    await userEvent.clear(input)
+    await userEvent.type(input, "55")
+    fireEvent.blur(input)
+
+    expect(onCopilotBudgetUsdChange).toHaveBeenCalledWith(55)
   })
 })

@@ -2,6 +2,14 @@
   const KEYCHAIN_SERVICE = "OpenUsage-copilot";
   const GH_KEYCHAIN_SERVICE = "gh:github.com";
   const USAGE_URL = "https://api.github.com/copilot_internal/user";
+  const VIEWER_URL = "https://api.github.com/user";
+  const USER_BUDGETS_URL = "https://api.github.com/users/{username}/settings/billing/budgets";
+  const API_VERSION = "2022-11-28";
+  const USER_AGENT = "GitHubCopilotChat/0.26.7";
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const DEFAULT_COPILOT_BUDGET_USD = 40;
+  const COPILOT_BUDGET_SETTING_KEY = "copilotBudgetUsd";
+  const COST_PER_ADDITIONAL_PREMIUM_REQUEST_USD = 0.04;
 
   function readJson(ctx, path) {
     try {
@@ -98,20 +106,166 @@
     );
   }
 
+  function makeGithubHeaders(token) {
+    return {
+      Authorization: "token " + token,
+      Accept: "application/json",
+      "User-Agent": USER_AGENT,
+      "X-Github-Api-Version": API_VERSION,
+    };
+  }
+
   function fetchUsage(ctx, token) {
     return ctx.util.request({
       method: "GET",
       url: USAGE_URL,
       headers: {
-        Authorization: "token " + token,
-        Accept: "application/json",
+        ...makeGithubHeaders(token),
         "Editor-Version": "vscode/1.96.2",
         "Editor-Plugin-Version": "copilot-chat/0.26.7",
-        "User-Agent": "GitHubCopilotChat/0.26.7",
-        "X-Github-Api-Version": "2025-04-01",
       },
       timeoutMs: 10000,
     });
+  }
+
+  function fetchViewer(ctx, token) {
+    return ctx.util.request({
+      method: "GET",
+      url: VIEWER_URL,
+      headers: makeGithubHeaders(token),
+      timeoutMs: 10000,
+    });
+  }
+
+  function fetchUserBudgets(ctx, token, username) {
+    return ctx.util.request({
+      method: "GET",
+      url: USER_BUDGETS_URL.replace("{username}", encodeURIComponent(username)),
+      headers: makeGithubHeaders(token),
+      timeoutMs: 10000,
+    });
+  }
+
+  function toFiniteNumber(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  function loadCopilotBudgetLimitUsd(ctx) {
+    const settingsPath = ctx.app.appDataDir + "/settings.json";
+    const settings = readJson(ctx, settingsPath);
+    const value = toFiniteNumber(settings && settings[COPILOT_BUDGET_SETTING_KEY]);
+    if (value !== null && value > 0) return value;
+    return DEFAULT_COPILOT_BUDGET_USD;
+  }
+
+  function hasText(value, fragment) {
+    return String(value || "").toLowerCase().indexOf(fragment) >= 0;
+  }
+
+  function budgetPriority(entry) {
+    let score = 0;
+
+    if (hasText(entry && entry.name, "premium request")) score = Math.max(score, 60);
+    if (hasText(entry && entry.name, "copilot")) score = Math.max(score, 50);
+
+    const items = Array.isArray(entry && entry.budget_items) ? entry.budget_items : [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const type = String(item && item.type || "").toLowerCase();
+      const target = String(item && item.target || "").toLowerCase();
+
+      if (target.indexOf("premium request") >= 0 && type === "sku") {
+        score = Math.max(score, 100);
+      } else if (target.indexOf("copilot") >= 0 && type === "product") {
+        score = Math.max(score, 90);
+      } else if (target.indexOf("premium request") >= 0 || target.indexOf("copilot") >= 0) {
+        score = Math.max(score, 80);
+      }
+    }
+
+    return score;
+  }
+
+  function pickCopilotBudgetSummary(payload) {
+    const list = Array.isArray(payload) ? payload : [];
+    let best = null;
+
+    for (let i = 0; i < list.length; i += 1) {
+      const entry = list[i];
+      const limit = toFiniteNumber(entry && entry.budget_limit);
+      const used = toFiniteNumber(entry && entry.current_budget);
+      if (limit === null || used === null || limit <= 0) continue;
+
+      const score = budgetPriority(entry);
+      if (score <= 0) continue;
+
+      if (
+        best === null ||
+        score > best.score ||
+        (score === best.score && limit > best.limit)
+      ) {
+        best = { score: score, used: used, limit: limit };
+      }
+    }
+
+    return best;
+  }
+
+  function viewerLoginFromUsagePayload(data) {
+    if (!data || typeof data !== "object") return null;
+    const direct = data.login || data.user_login || data.username;
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+    if (data.user && typeof data.user.login === "string" && data.user.login.trim()) {
+      return data.user.login.trim();
+    }
+    return null;
+  }
+
+  function fetchCopilotBudgetSummary(ctx, token, usageData) {
+    let login = viewerLoginFromUsagePayload(usageData);
+
+    if (!login) {
+      const viewerResp = fetchViewer(ctx, token);
+      if (viewerResp.status >= 200 && viewerResp.status < 300) {
+        const viewer = ctx.util.tryParseJson(viewerResp.bodyText);
+        if (viewer && typeof viewer.login === "string" && viewer.login.trim()) {
+          login = viewer.login.trim();
+        }
+      } else {
+        ctx.host.log.warn("viewer request failed for budget lookup: status=" + viewerResp.status);
+      }
+    }
+
+    if (!login) return null;
+
+    const budgetsResp = fetchUserBudgets(ctx, token, login);
+    if (budgetsResp.status < 200 || budgetsResp.status >= 300) {
+      ctx.host.log.warn("budget request failed: status=" + budgetsResp.status);
+      return null;
+    }
+
+    const budgets = ctx.util.tryParseJson(budgetsResp.bodyText);
+    if (budgets === null) {
+      ctx.host.log.warn("budget response invalid json");
+      return null;
+    }
+
+    return pickCopilotBudgetSummary(budgets);
+  }
+
+  function deriveBudgetSummaryFromPremiumOverage(ctx, usageData) {
+    const limit = loadCopilotBudgetLimitUsd(ctx);
+    const snapshots = usageData && usageData.quota_snapshots;
+    const premium = snapshots && snapshots.premium_interactions;
+    const remaining = toFiniteNumber(premium && premium.remaining);
+    const overageRequests = remaining !== null ? Math.max(0, -remaining) : 0;
+    const used = Math.round(overageRequests * COST_PER_ADDITIONAL_PREMIUM_REQUEST_USD * 100) / 100;
+    return { used: used, limit: limit };
   }
 
   function makeProgressLine(ctx, label, snapshot, resetDate) {
@@ -124,7 +278,7 @@
       limit: 100,
       format: { kind: "percent" },
       resetsAt: ctx.util.toIso(resetDate),
-      periodDurationMs: 30 * 24 * 60 * 60 * 1000,
+      periodDurationMs: THIRTY_DAYS_MS,
     });
   }
 
@@ -139,7 +293,24 @@
       limit: 100,
       format: { kind: "percent" },
       resetsAt: ctx.util.toIso(resetDate),
-      periodDurationMs: 30 * 24 * 60 * 60 * 1000,
+      periodDurationMs: THIRTY_DAYS_MS,
+    });
+  }
+
+  function makeBudgetLine(ctx, budgetSummary, resetDate) {
+    if (!budgetSummary) return null;
+
+    const limit = toFiniteNumber(budgetSummary.limit);
+    const used = toFiniteNumber(budgetSummary.used);
+    if (limit === null || used === null || limit <= 0) return null;
+
+    return ctx.line.progress({
+      label: "Budget",
+      used: Math.max(0, used),
+      limit: limit,
+      format: { kind: "dollars" },
+      resetsAt: ctx.util.toIso(resetDate),
+      periodDurationMs: THIRTY_DAYS_MS,
     });
   }
 
@@ -217,6 +388,16 @@
     // Paid tier: quota_snapshots
     const snapshots = data.quota_snapshots;
     if (snapshots) {
+      let budgetSummary = null;
+      try {
+        budgetSummary = fetchCopilotBudgetSummary(ctx, token, data);
+      } catch (e) {
+        ctx.host.log.warn("budget lookup failed: " + String(e));
+      }
+      if (!budgetSummary) {
+        budgetSummary = deriveBudgetSummaryFromPremiumOverage(ctx, data);
+      }
+
       const premiumLine = makeProgressLine(
         ctx,
         "Premium",
@@ -225,13 +406,8 @@
       );
       if (premiumLine) lines.push(premiumLine);
 
-      const chatLine = makeProgressLine(
-        ctx,
-        "Chat",
-        snapshots.chat,
-        data.quota_reset_date,
-      );
-      if (chatLine) lines.push(chatLine);
+      const budgetLine = makeBudgetLine(ctx, budgetSummary, data.quota_reset_date);
+      if (budgetLine) lines.push(budgetLine);
     }
 
     // Free tier: limited_user_quotas

@@ -1,6 +1,6 @@
 # GitHub Copilot
 
-Tracks GitHub Copilot usage quotas for both paid and free tier users.
+Tracks GitHub Copilot usage quotas and paid-tier budget spend.
 
 ## Authentication
 
@@ -28,19 +28,29 @@ Once authenticated via gh CLI, the plugin caches the token in the OpenUsage keyc
 
 ## API
 
-**Endpoint:** `https://api.github.com/copilot_internal/user`
+The plugin uses three GitHub endpoints:
 
-**Headers:**
+1. `GET https://api.github.com/copilot_internal/user` (Copilot quotas + plan)
+2. `GET https://api.github.com/user` (resolve login when missing from usage payload)
+3. `GET https://api.github.com/users/{username}/settings/billing/budgets` (monthly budget spend/limit)
+
+Common headers:
+
 ```
 Authorization: token <token>
 Accept: application/json
-Editor-Version: vscode/1.96.2
-Editor-Plugin-Version: copilot-chat/0.26.7
 User-Agent: GitHubCopilotChat/0.26.7
-X-Github-Api-Version: 2025-04-01
+X-Github-Api-Version: 2022-11-28
 ```
 
-### Response (Paid Tier)
+Copilot usage request also includes:
+
+```
+Editor-Version: vscode/1.96.2
+Editor-Plugin-Version: copilot-chat/0.26.7
+```
+
+### Response (Paid Tier Quotas)
 
 ```json
 {
@@ -63,6 +73,22 @@ X-Github-Api-Version: 2025-04-01
 }
 ```
 
+### Response (User Budgets)
+
+```json
+[
+  {
+    "id": "budget_123",
+    "name": "Copilot Budget",
+    "budget_limit": 40,
+    "current_budget": 1.64,
+    "budget_items": [
+      { "type": "sku", "target": "All Premium Request SKUs" }
+    ]
+  }
+]
+```
+
 ### Response (Free Tier)
 
 ```json
@@ -83,11 +109,20 @@ X-Github-Api-Version: 2025-04-01
 
 ## Displayed Lines
 
-| Line         | Tier | Description                              |
-|--------------|------|------------------------------------------|
-| Premium      | Paid | Premium interactions remaining (percent) |
-| Chat         | Both | Chat messages remaining                  |
-| Completions  | Free | Code completions remaining               |
+| Line         | Tier | Description                                    |
+|--------------|------|------------------------------------------------|
+| Premium      | Paid | Premium interactions remaining (percent)       |
+| Budget       | Paid | Monthly spend vs budget limit (`$spent/$limit`) |
+| Chat         | Free | Chat messages remaining                        |
+| Completions  | Free | Code completions remaining                     |
+
+### Budget Fallback Behavior
+
+If personal billing budgets are unavailable (for example, endpoint returns 404 or token lacks billing scope), paid-tier budget is derived from Copilot premium overage:
+
+- `overage_requests = max(0, -premium_interactions.remaining)`
+- `spent_usd = overage_requests * 0.04`
+- `budget_limit_usd` comes from OpenUsage setting `copilotBudgetUsd` (default: `40`)
 
 All progress lines include:
 - `resetsAt` — ISO timestamp of next quota reset

@@ -24,6 +24,7 @@ import { useAppUpdate } from "@/hooks/use-app-update"
 import {
   arePluginSettingsEqual,
   DEFAULT_AUTO_UPDATE_INTERVAL,
+  DEFAULT_COPILOT_BUDGET_USD,
   DEFAULT_DISPLAY_MODE,
   DEFAULT_GLOBAL_SHORTCUT,
   DEFAULT_RESET_TIMER_DISPLAY_MODE,
@@ -35,6 +36,7 @@ import {
   getEnabledPluginIds,
   isTrayPercentageMandatory,
   loadAutoUpdateInterval,
+  loadCopilotBudgetUsd,
   loadDisplayMode,
   loadGlobalShortcut,
   loadPluginSettings,
@@ -45,6 +47,7 @@ import {
   loadThemeMode,
   normalizePluginSettings,
   saveAutoUpdateInterval,
+  saveCopilotBudgetUsd,
   saveDisplayMode,
   saveGlobalShortcut,
   savePluginSettings,
@@ -98,6 +101,7 @@ function App() {
   const [trayShowPercentage, setTrayShowPercentage] = useState(DEFAULT_TRAY_SHOW_PERCENTAGE)
   const [globalShortcut, setGlobalShortcut] = useState<GlobalShortcut>(DEFAULT_GLOBAL_SHORTCUT)
   const [startOnLogin, setStartOnLogin] = useState(DEFAULT_START_ON_LOGIN)
+  const [copilotBudgetUsd, setCopilotBudgetUsd] = useState(DEFAULT_COPILOT_BUDGET_USD)
   const [maxPanelHeightPx, setMaxPanelHeightPx] = useState<number | null>(null)
   const maxPanelHeightPxRef = useRef<number | null>(null)
   const [appVersion, setAppVersion] = useState("...")
@@ -566,6 +570,13 @@ function App() {
           console.error("Failed to load start on login:", error)
         }
 
+        let storedCopilotBudgetUsd = DEFAULT_COPILOT_BUDGET_USD
+        try {
+          storedCopilotBudgetUsd = await loadCopilotBudgetUsd()
+        } catch (error) {
+          console.error("Failed to load copilot budget:", error)
+        }
+
         try {
           await applyStartOnLogin(storedStartOnLogin)
         } catch (error) {
@@ -586,6 +597,7 @@ function App() {
           setTrayShowPercentage(normalizedTrayShowPercentage)
           setGlobalShortcut(storedGlobalShortcut)
           setStartOnLogin(storedStartOnLogin)
+          setCopilotBudgetUsd(storedCopilotBudgetUsd)
           const enabledIds = getEnabledPluginIds(normalized)
           setLoadingForPlugins(enabledIds)
           try {
@@ -837,6 +849,14 @@ function App() {
     })
   }, [applyStartOnLogin])
 
+  const handleCopilotBudgetUsdChange = useCallback((value: number) => {
+    track("setting_changed", { setting: "copilot_budget_usd", value: String(value) })
+    setCopilotBudgetUsd(value)
+    void saveCopilotBudgetUsd(value).catch((error) => {
+      console.error("Failed to save copilot budget:", error)
+    })
+  }, [])
+
   const settingsPlugins = useMemo(() => {
     if (!pluginSettings) return []
     const pluginMap = new Map(pluginsMeta.map((plugin) => [plugin.id, plugin]))
@@ -960,6 +980,8 @@ function App() {
           onGlobalShortcutChange={handleGlobalShortcutChange}
           startOnLogin={startOnLogin}
           onStartOnLoginChange={handleStartOnLoginChange}
+          copilotBudgetUsd={copilotBudgetUsd}
+          onCopilotBudgetUsdChange={handleCopilotBudgetUsdChange}
           providerIconUrl={navPlugins[0]?.iconUrl}
         />
       )

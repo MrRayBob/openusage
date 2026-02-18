@@ -32,6 +32,7 @@ const TRAY_ICON_STYLE_KEY = "trayIconStyle";
 const TRAY_SHOW_PERCENTAGE_KEY = "trayShowPercentage";
 const GLOBAL_SHORTCUT_KEY = "globalShortcut";
 const START_ON_LOGIN_KEY = "startOnLogin";
+const COPILOT_BUDGET_USD_KEY = "copilotBudgetUsd";
 
 export const DEFAULT_AUTO_UPDATE_INTERVAL: AutoUpdateIntervalMinutes = 15;
 export const DEFAULT_THEME_MODE: ThemeMode = "system";
@@ -41,6 +42,7 @@ export const DEFAULT_TRAY_ICON_STYLE: TrayIconStyle = "bars";
 export const DEFAULT_TRAY_SHOW_PERCENTAGE = false;
 export const DEFAULT_GLOBAL_SHORTCUT: GlobalShortcut = null;
 export const DEFAULT_START_ON_LOGIN = false;
+export const DEFAULT_COPILOT_BUDGET_USD = 40;
 
 const AUTO_UPDATE_INTERVALS: AutoUpdateIntervalMinutes[] = [5, 15, 30, 60];
 const THEME_MODES: ThemeMode[] = ["system", "light", "dark"];
@@ -277,5 +279,20 @@ export async function loadStartOnLogin(): Promise<boolean> {
 
 export async function saveStartOnLogin(value: boolean): Promise<void> {
   await store.set(START_ON_LOGIN_KEY, value);
+  await store.save();
+}
+
+function isValidCopilotBudgetUsd(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+export async function loadCopilotBudgetUsd(): Promise<number> {
+  const stored = await store.get<unknown>(COPILOT_BUDGET_USD_KEY);
+  if (isValidCopilotBudgetUsd(stored)) return stored;
+  return DEFAULT_COPILOT_BUDGET_USD;
+}
+
+export async function saveCopilotBudgetUsd(value: number): Promise<void> {
+  await store.set(COPILOT_BUDGET_USD_KEY, value);
   await store.save();
 }

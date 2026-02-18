@@ -6,6 +6,9 @@ const loadPlugin = async () => {
   return globalThis.__openusage_plugin;
 };
 
+const USAGE_URL = "https://api.github.com/copilot_internal/user";
+const VIEWER_URL = "https://api.github.com/user";
+
 function makeUsageResponse(overrides = {}) {
   return {
     copilot_plan: "pro",
@@ -25,6 +28,28 @@ function makeUsageResponse(overrides = {}) {
       },
     },
     ...overrides,
+  };
+}
+
+function makeBudgetEntry(overrides = {}) {
+  return {
+    id: "budget_copilot",
+    name: "Copilot Budget",
+    budget_limit: 40,
+    current_budget: 1.64,
+    budget_items: [
+      { type: "product", target: "Copilot" },
+    ],
+    ...overrides,
+  };
+}
+
+function makeBudgetsResponse(overrides = {}) {
+  const entries = overrides.entries ?? [makeBudgetEntry()];
+  const body = overrides.body ?? entries;
+  return {
+    status: overrides.status ?? 200,
+    bodyText: typeof body === "string" ? body : JSON.stringify(body),
   };
 }
 
@@ -49,10 +74,40 @@ function setStateFileToken(ctx, token) {
   );
 }
 
-function mockUsageOk(ctx, body) {
-  ctx.host.http.request.mockReturnValue({
-    status: 200,
-    bodyText: JSON.stringify(body || makeUsageResponse()),
+function setCopilotBudgetSetting(ctx, budgetUsd) {
+  ctx.host.fs.writeText(
+    ctx.app.appDataDir + "/settings.json",
+    JSON.stringify({ copilotBudgetUsd: budgetUsd }),
+  );
+}
+
+function mockUsageOk(ctx, body, options = {}) {
+  const usageBody = body || makeUsageResponse();
+  const usageStatus = options.usageStatus ?? 200;
+  const usageBodyText = options.usageBodyText ?? JSON.stringify(usageBody);
+  const viewerStatus = options.viewerStatus ?? 200;
+  const viewerBody = options.viewerBody ?? { login: options.viewerLogin || "MrRayBob" };
+  const viewerBodyText = typeof viewerBody === "string" ? viewerBody : JSON.stringify(viewerBody);
+  const budgetsOverrides = Array.isArray(options.budgets)
+    ? { entries: options.budgets }
+    : (options.budgets || {});
+  const budgets = makeBudgetsResponse(budgetsOverrides);
+  const viewerLogin = (typeof viewerBody === "object" && viewerBody && viewerBody.login)
+    ? viewerBody.login
+    : (options.viewerLogin || "MrRayBob");
+  const budgetsUrl = `https://api.github.com/users/${encodeURIComponent(viewerLogin)}/settings/billing/budgets`;
+
+  ctx.host.http.request.mockImplementation((req) => {
+    if (req.url === USAGE_URL) {
+      return { status: usageStatus, bodyText: usageBodyText };
+    }
+    if (req.url === VIEWER_URL) {
+      return { status: viewerStatus, bodyText: viewerBodyText };
+    }
+    if (req.url === budgetsUrl) {
+      return budgets;
+    }
+    return { status: 404, bodyText: "" };
   });
 }
 
@@ -164,43 +219,165 @@ describe("copilot plugin", () => {
     expect(ctx.host.keychain.writeGenericPassword).not.toHaveBeenCalled();
   });
 
-  it("renders both Premium and Chat lines for paid tier", async () => {
+  it("renders both Premium and Budget lines for paid tier", async () => {
     const ctx = makePluginTestContext();
     setKeychainToken(ctx, "tok");
     mockUsageOk(ctx);
     const plugin = await loadPlugin();
     const result = plugin.probe(ctx);
     const premium = result.lines.find((l) => l.label === "Premium");
-    const chat = result.lines.find((l) => l.label === "Chat");
+    const budget = result.lines.find((l) => l.label === "Budget");
     expect(premium).toBeTruthy();
     expect(premium.used).toBe(20); // 100 - 80
     expect(premium.limit).toBe(100);
-    expect(chat).toBeTruthy();
-    expect(chat.used).toBe(5); // 100 - 95
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(1.64);
+    expect(budget.limit).toBe(40);
   });
 
-  it("renders only Premium when Chat is missing", async () => {
+  it("falls back to default local budget when billing budget is unavailable", async () => {
     const ctx = makePluginTestContext();
     setKeychainToken(ctx, "tok");
-    ctx.host.http.request.mockReturnValue({
-      status: 200,
-      bodyText: JSON.stringify(
-        makeUsageResponse({
-          quota_snapshots: {
-            premium_interactions: {
-              percent_remaining: 50,
-              entitlement: 300,
-              remaining: 150,
-              quota_id: "premium",
-            },
+    mockUsageOk(
+      ctx,
+      makeUsageResponse({
+        quota_snapshots: {
+          premium_interactions: {
+            percent_remaining: 50,
+            entitlement: 300,
+            remaining: 150,
+            quota_id: "premium",
           },
-        }),
-      ),
-    });
+        },
+      }),
+      { budgets: [] },
+    );
     const plugin = await loadPlugin();
     const result = plugin.probe(ctx);
-    expect(result.lines.find((l) => l.label === "Premium")).toBeTruthy();
-    expect(result.lines.find((l) => l.label === "Chat")).toBeFalsy();
+    const premium = result.lines.find((l) => l.label === "Premium");
+    const budget = result.lines.find((l) => l.label === "Budget");
+    expect(premium).toBeTruthy();
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(0);
+    expect(budget.limit).toBe(40);
+  });
+
+  it("prefers premium-request SKU budget when multiple copilot budgets exist", async () => {
+    const ctx = makePluginTestContext();
+    setKeychainToken(ctx, "tok");
+    mockUsageOk(ctx, makeUsageResponse(), {
+      budgets: {
+        entries: [
+          makeBudgetEntry({
+            id: "product_budget",
+            budget_limit: 40,
+            current_budget: 1.64,
+            budget_items: [{ type: "product", target: "Copilot" }],
+          }),
+          makeBudgetEntry({
+            id: "sku_budget",
+            budget_limit: 60,
+            current_budget: 7.25,
+            budget_items: [{ type: "sku", target: "All Premium Request SKUs" }],
+          }),
+        ],
+      },
+    });
+
+    const plugin = await loadPlugin();
+    const result = plugin.probe(ctx);
+    const budget = result.lines.find((l) => l.label === "Budget");
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(7.25);
+    expect(budget.limit).toBe(60);
+  });
+
+  it("uses login from usage payload and skips /user lookup", async () => {
+    const ctx = makePluginTestContext();
+    setKeychainToken(ctx, "tok");
+    mockUsageOk(
+      ctx,
+      makeUsageResponse({ login: "MrRayBob" }),
+      { budgets: { entries: [makeBudgetEntry()] } },
+    );
+
+    const plugin = await loadPlugin();
+    plugin.probe(ctx);
+
+    const calledUserEndpoint = ctx.host.http.request.mock.calls.some(
+      (args) => args[0].url === VIEWER_URL,
+    );
+    expect(calledUserEndpoint).toBe(false);
+  });
+
+  it("keeps paid-tier premium line when budget fetch fails", async () => {
+    const ctx = makePluginTestContext();
+    setKeychainToken(ctx, "tok");
+    mockUsageOk(ctx, makeUsageResponse(), {
+      budgets: { status: 500, body: [] },
+    });
+
+    const plugin = await loadPlugin();
+    const result = plugin.probe(ctx);
+    const premium = result.lines.find((l) => l.label === "Premium");
+    const budget = result.lines.find((l) => l.label === "Budget");
+    expect(premium).toBeTruthy();
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(0);
+    expect(budget.limit).toBe(40);
+  });
+
+  it("derives overage spend from negative premium remaining when billing budget is unavailable", async () => {
+    const ctx = makePluginTestContext();
+    setKeychainToken(ctx, "tok");
+    mockUsageOk(
+      ctx,
+      makeUsageResponse({
+        quota_snapshots: {
+          premium_interactions: {
+            percent_remaining: 0,
+            entitlement: 300,
+            remaining: -41,
+            quota_id: "premium",
+          },
+        },
+      }),
+      { budgets: { status: 404, body: [] } },
+    );
+
+    const plugin = await loadPlugin();
+    const result = plugin.probe(ctx);
+    const budget = result.lines.find((l) => l.label === "Budget");
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(1.64);
+    expect(budget.limit).toBe(40);
+  });
+
+  it("uses configured copilot budget setting for overage fallback", async () => {
+    const ctx = makePluginTestContext();
+    setKeychainToken(ctx, "tok");
+    setCopilotBudgetSetting(ctx, 55);
+    mockUsageOk(
+      ctx,
+      makeUsageResponse({
+        quota_snapshots: {
+          premium_interactions: {
+            percent_remaining: 0,
+            entitlement: 300,
+            remaining: -41,
+            quota_id: "premium",
+          },
+        },
+      }),
+      { budgets: { status: 404, body: [] } },
+    );
+
+    const plugin = await loadPlugin();
+    const result = plugin.probe(ctx);
+    const budget = result.lines.find((l) => l.label === "Budget");
+    expect(budget).toBeTruthy();
+    expect(budget.used).toBe(1.64);
+    expect(budget.limit).toBe(55);
   });
 
   it("shows 'No usage data' when both snapshots missing", async () => {
@@ -342,7 +519,7 @@ describe("copilot plugin", () => {
     const call = ctx.host.http.request.mock.calls[0][0];
     expect(call.headers["User-Agent"]).toBe("GitHubCopilotChat/0.26.7");
     expect(call.headers["Editor-Version"]).toBe("vscode/1.96.2");
-    expect(call.headers["X-Github-Api-Version"]).toBe("2025-04-01");
+    expect(call.headers["X-Github-Api-Version"]).toBe("2022-11-28");
   });
 
   it("includes periodDurationMs on paid tier progress lines", async () => {
@@ -352,9 +529,9 @@ describe("copilot plugin", () => {
     const plugin = await loadPlugin();
     const result = plugin.probe(ctx);
     const premium = result.lines.find((l) => l.label === "Premium");
-    const chat = result.lines.find((l) => l.label === "Chat");
+    const budget = result.lines.find((l) => l.label === "Budget");
     expect(premium.periodDurationMs).toBe(30 * 24 * 60 * 60 * 1000);
-    expect(chat.periodDurationMs).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(budget.periodDurationMs).toBe(30 * 24 * 60 * 60 * 1000);
   });
 
   it("renders Chat and Completions for free tier (limited_user_quotas)", async () => {
@@ -452,7 +629,7 @@ describe("copilot plugin", () => {
 
   it("retries with gh-cli token when cached keychain token is stale", async () => {
     const ctx = makePluginTestContext();
-    let callCount = 0;
+    let usageCallCount = 0;
     // First call returns stale keychain token, second call returns fresh gh-cli token
     ctx.host.keychain.readGenericPassword.mockImplementation((service) => {
       if (service === "OpenUsage-copilot") {
@@ -465,16 +642,26 @@ describe("copilot plugin", () => {
     });
     // First request with stale token returns 401, second with fresh token succeeds
     ctx.host.http.request.mockImplementation((opts) => {
-      callCount++;
-      if (opts.headers.Authorization === "token stale_token") {
+      if (opts.url === USAGE_URL && opts.headers.Authorization === "token stale_token") {
+        usageCallCount++;
         return { status: 401, bodyText: "" };
       }
-      return { status: 200, bodyText: JSON.stringify(makeUsageResponse()) };
+      if (opts.url === USAGE_URL && opts.headers.Authorization === "token fresh_gh_token") {
+        usageCallCount++;
+        return { status: 200, bodyText: JSON.stringify(makeUsageResponse({ login: "MrRayBob" })) };
+      }
+      if (opts.url === "https://api.github.com/users/MrRayBob/settings/billing/budgets") {
+        return makeBudgetsResponse();
+      }
+      if (opts.url === VIEWER_URL) {
+        return { status: 200, bodyText: JSON.stringify({ login: "MrRayBob" }) };
+      }
+      return { status: 404, bodyText: "" };
     });
     const plugin = await loadPlugin();
     const result = plugin.probe(ctx);
     expect(result.lines.find((l) => l.label === "Premium")).toBeTruthy();
-    expect(callCount).toBe(2);
+    expect(usageCallCount).toBe(2);
     // Should have cleared the stale token
     expect(ctx.host.keychain.deleteGenericPassword).toHaveBeenCalledWith("OpenUsage-copilot");
     // Should have saved the fresh token
