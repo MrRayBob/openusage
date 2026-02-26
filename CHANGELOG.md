@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.9 - 2026-02-26
+
+### Sync
+- Synced fork with latest upstream OpenUsage changes through `0.6.8`.
+- Includes recent provider/UI updates (MiniMax endpoint detection, expanded Cursor usage metrics, menubar icon options, app architecture split).
+
+### Copilot Budget
+- Keeps paid Copilot focused on `Premium` + `Budget` usage (no paid-tier chat bar).
+- Adds/retains `Copilot Budget` setting in app Settings (default `$40`).
+- Budget fallback still derives overage spend from premium overage requests:
+  - `spent_usd = max(0, -premium_remaining) * 0.04`.
+
+### Tray Bars
+- Copilot top/tray primary bar now switches to budget-spent progress when premium requests are exhausted, instead of staying at `0%`.
+
 ## 0.6.8
 
 ### New Features
