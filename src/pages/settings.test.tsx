@@ -55,10 +55,14 @@ const defaultProps = {
   onDisplayModeChange: vi.fn(),
   resetTimerDisplayMode: "relative" as const,
   onResetTimerDisplayModeChange: vi.fn(),
-  trayIconStyle: "bars" as const,
-  onTrayIconStyleChange: vi.fn(),
-  trayShowPercentage: false,
-  onTrayShowPercentageChange: vi.fn(),
+  menubarIconStyle: "provider" as const,
+  onMenubarIconStyleChange: vi.fn(),
+  traySettingsPreview: {
+    bars: [{ id: "a", fraction: 0.7 }],
+    providerBars: [{ id: "a", fraction: 0.7 }],
+    providerIconUrl: "icon-a",
+    providerPercentText: "70%",
+  },
   globalShortcut: null,
   onGlobalShortcutChange: vi.fn(),
   startOnLogin: false,
@@ -71,17 +75,12 @@ afterEach(() => {
   cleanup()
 })
 
-function getTrayShowPercentageCheckbox() {
-  return screen.getAllByRole("checkbox")[0]
-}
-
 describe("SettingsPage", () => {
   it("toggles plugins", async () => {
     const onToggle = vi.fn()
     render(
       <SettingsPage
         {...defaultProps}
-        trayIconStyle="textOnly"
         plugins={[
           { id: "b", name: "Beta", enabled: false },
         ]}
@@ -184,16 +183,6 @@ describe("SettingsPage", () => {
     expect(onResetTimerDisplayModeChange).toHaveBeenCalledWith("absolute")
   })
 
-  it("renders tray icon style section", () => {
-    render(<SettingsPage {...defaultProps} />)
-    expect(screen.getByText("Bar Icon")).toBeInTheDocument()
-    expect(screen.getByText("The little guy up top")).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: "Bars" })).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: "Circle" })).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: "Provider" })).toBeInTheDocument()
-    expect(screen.getByRole("radio", { name: "%" })).toBeInTheDocument()
-  })
-
   it("renders renamed usage section heading", () => {
     render(<SettingsPage {...defaultProps} />)
     expect(screen.getByText("Usage Mode")).toBeInTheDocument()
@@ -204,91 +193,40 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Reset Timers")).toBeInTheDocument()
   })
 
-  it("updates tray icon style", async () => {
-    const onTrayIconStyleChange = vi.fn()
+  it("renders menubar icon section", () => {
+    render(<SettingsPage {...defaultProps} />)
+    expect(screen.getByText("Menubar Icon")).toBeInTheDocument()
+    expect(screen.getByText("What shows in the menu bar")).toBeInTheDocument()
+  })
+
+  it("clicking Bars triggers onMenubarIconStyleChange(\"bars\")", async () => {
+    const onMenubarIconStyleChange = vi.fn()
     render(
       <SettingsPage
         {...defaultProps}
-        onTrayIconStyleChange={onTrayIconStyleChange}
+        onMenubarIconStyleChange={onMenubarIconStyleChange}
       />
     )
-    await userEvent.click(screen.getByRole("radio", { name: "Circle" }))
-    expect(onTrayIconStyleChange).toHaveBeenCalledWith("circle")
+    await userEvent.click(screen.getByRole("radio", { name: "Bars" }))
+    expect(onMenubarIconStyleChange).toHaveBeenCalledWith("bars")
   })
 
-  it("updates text-only tray icon style", async () => {
-    const onTrayIconStyleChange = vi.fn()
+  it("clicking Donut triggers onMenubarIconStyleChange(\"donut\")", async () => {
+    const onMenubarIconStyleChange = vi.fn()
     render(
       <SettingsPage
         {...defaultProps}
-        onTrayIconStyleChange={onTrayIconStyleChange}
+        onMenubarIconStyleChange={onMenubarIconStyleChange}
       />
     )
-    await userEvent.click(screen.getByRole("radio", { name: "%" }))
-    expect(onTrayIconStyleChange).toHaveBeenCalledWith("textOnly")
+    await userEvent.click(screen.getByRole("radio", { name: "Donut" }))
+    expect(onMenubarIconStyleChange).toHaveBeenCalledWith("donut")
   })
 
-  it("updates provider tray icon style", async () => {
-    const onTrayIconStyleChange = vi.fn()
-    render(
-      <SettingsPage
-        {...defaultProps}
-        onTrayIconStyleChange={onTrayIconStyleChange}
-      />
-    )
-    await userEvent.click(screen.getByRole("radio", { name: "Provider" }))
-    expect(onTrayIconStyleChange).toHaveBeenCalledWith("provider")
-  })
-
-  it("always shows percentage checkbox and enforces mandatory styles", () => {
-    const { rerender } = render(
-      <SettingsPage
-        {...defaultProps}
-        trayIconStyle="bars"
-      />
-    )
-    expect(screen.getByText("Show percentage")).toBeInTheDocument()
-    expect(getTrayShowPercentageCheckbox().getAttribute("aria-disabled")).not.toBe("true")
-
-    rerender(
-      <SettingsPage
-        {...defaultProps}
-        trayIconStyle="circle"
-      />
-    )
-    expect(getTrayShowPercentageCheckbox().getAttribute("aria-disabled")).not.toBe("true")
-
-    rerender(
-      <SettingsPage
-        {...defaultProps}
-        trayIconStyle="provider"
-      />
-    )
-    expect(getTrayShowPercentageCheckbox()).toHaveAttribute("aria-disabled", "true")
-    expect(getTrayShowPercentageCheckbox()).toBeChecked()
-
-    rerender(
-      <SettingsPage
-        {...defaultProps}
-        trayIconStyle="textOnly"
-      />
-    )
-    expect(getTrayShowPercentageCheckbox()).toHaveAttribute("aria-disabled", "true")
-    expect(getTrayShowPercentageCheckbox()).toBeChecked()
-  })
-
-  it("toggles show percentage checkbox", async () => {
-    const onTrayShowPercentageChange = vi.fn()
-    render(
-      <SettingsPage
-        {...defaultProps}
-        trayShowPercentage
-        onTrayShowPercentageChange={onTrayShowPercentageChange}
-      />
-    )
-    await userEvent.click(screen.getByText("Show percentage"))
-    expect(onTrayShowPercentageChange).toHaveBeenCalled()
-    expect(onTrayShowPercentageChange.mock.calls[0]?.[0]).toBe(false)
+  it("does not render removed bar icon controls", () => {
+    render(<SettingsPage {...defaultProps} />)
+    expect(screen.queryByText("Bar Icon")).not.toBeInTheDocument()
+    expect(screen.queryByText("Show percentage")).not.toBeInTheDocument()
   })
 
   it("toggles start on login checkbox", async () => {

@@ -1,6 +1,6 @@
-**Track all your AI coding subscriptions in one place.**
+# Track all your AI coding subscriptions in one place
 
-Amp, Cursor, Claude, Codex, and more coming. See your usage at a glance from your menu bar. No digging through dashboards.
+See your usage at a glance from your menu bar. No digging through dashboards.
 
 ![OpenUsage Screenshot](screenshot.png)
 
@@ -24,18 +24,19 @@ OpenUsage lives in your menu bar and shows you how much of your AI coding subscr
 
 - [**Amp**](docs/providers/amp.md) / free tier, bonus, credits
 - [**Antigravity**](docs/providers/antigravity.md) / all models
-- [**Claude**](docs/providers/claude.md) / session, weekly, extra usage
+- [**Claude**](docs/providers/claude.md) / session, weekly, extra usage, local token usage (ccusage)
 - [**Codex**](docs/providers/codex.md) / session, weekly, reviews, credits
 - [**Copilot**](docs/providers/copilot.md) / premium, budget, chat, completions
-- [**Cursor**](docs/providers/cursor.md) / credits, plan usage, on-demand
+- [**Cursor**](docs/providers/cursor.md) / credits, total usage, auto usage, API usage, on-demand, CLI auth
+- [**Factory / Droid**](docs/providers/factory.md) / standard, premium tokens
 - [**Gemini**](docs/providers/gemini.md) / pro, flash, workspace/free/paid tier
 - [**Kimi Code**](docs/providers/kimi.md) / session, weekly
+- [**MiniMax**](docs/providers/minimax.md) / coding plan session
 - [**Windsurf**](docs/providers/windsurf.md) / prompt credits, flex credits
 - [**Z.ai**](docs/providers/zai.md) / session, web searches
 
 ### Maybe Soon
 
-- [Factory / Droid](https://github.com/robinebers/openusage/issues/16)
 - [Vercel AI Gateway](https://github.com/robinebers/openusage/issues/18)
 
 Community contributions welcome.
@@ -48,8 +49,6 @@ OpenUsage is built by its users. Hundreds of people use it daily, and the projec
 I maintain the project as a guide and quality gatekeeper, but this is your app as much as mine. If something is missing or broken, the best way to get it fixed is to contribute by opening an issue, or submitting a PR.
 
 Plugins are currently bundled as we build our the API, but soon will be made flexible so you can build and load their own.
-
-**Windows/Linux:** high-priority and on the todo, but I need testers with some time, willing to help out.
 
 ### How to Contribute
 

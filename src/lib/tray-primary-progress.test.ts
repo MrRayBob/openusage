@@ -30,6 +30,51 @@ describe("getTrayPrimaryBars", () => {
     expect(bars.map((b) => b.id)).toEqual(["a", "b", "d", "e"])
   })
 
+  it("can target a specific plugin id for tray rendering", () => {
+    const bars = getTrayPrimaryBars({
+      pluginsMeta: [
+        {
+          id: "a",
+          name: "A",
+          iconUrl: "",
+          primaryCandidates: ["Session"],
+          lines: [],
+        },
+        {
+          id: "b",
+          name: "B",
+          iconUrl: "",
+          primaryCandidates: ["Session"],
+          lines: [],
+        },
+      ],
+      pluginSettings: { order: ["a", "b"], disabled: [] },
+      pluginStates: {
+        b: {
+          data: {
+            providerId: "b",
+            displayName: "B",
+            iconUrl: "",
+            lines: [
+              {
+                type: "progress",
+                label: "Session",
+                used: 25,
+                limit: 100,
+                format: { kind: "percent" },
+              },
+            ],
+          },
+          loading: false,
+          error: null,
+        },
+      },
+      pluginId: "b",
+    })
+
+    expect(bars).toEqual([{ id: "b", fraction: 0.75 }])
+  })
+
   it("includes plugins with primary candidates even when no data (fraction undefined)", () => {
     const bars = getTrayPrimaryBars({
       pluginsMeta: [
@@ -257,5 +302,96 @@ describe("getTrayPrimaryBars", () => {
     })
     expect(bars).toEqual([])
   })
-})
 
+  it("uses Copilot budget-used fraction when premium is depleted in left mode", () => {
+    const bars = getTrayPrimaryBars({
+      displayMode: "left",
+      pluginsMeta: [
+        {
+          id: "copilot",
+          name: "Copilot",
+          iconUrl: "",
+          primaryCandidates: ["Premium", "Budget"],
+          lines: [],
+        },
+      ],
+      pluginSettings: { order: ["copilot"], disabled: [] },
+      pluginStates: {
+        copilot: {
+          data: {
+            providerId: "copilot",
+            displayName: "Copilot",
+            iconUrl: "",
+            lines: [
+              {
+                type: "progress",
+                label: "Premium",
+                used: 100,
+                limit: 100,
+                format: { kind: "percent" },
+              },
+              {
+                type: "progress",
+                label: "Budget",
+                used: 1.64,
+                limit: 40,
+                format: { kind: "dollars" },
+              },
+            ],
+          },
+          loading: false,
+          error: null,
+        },
+      },
+    })
+
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.id).toBe("copilot")
+    expect(bars[0]?.fraction).toBeCloseTo(0.041, 3)
+  })
+
+  it("keeps Copilot premium line as primary while premium still has remaining", () => {
+    const bars = getTrayPrimaryBars({
+      displayMode: "left",
+      pluginsMeta: [
+        {
+          id: "copilot",
+          name: "Copilot",
+          iconUrl: "",
+          primaryCandidates: ["Premium", "Budget"],
+          lines: [],
+        },
+      ],
+      pluginSettings: { order: ["copilot"], disabled: [] },
+      pluginStates: {
+        copilot: {
+          data: {
+            providerId: "copilot",
+            displayName: "Copilot",
+            iconUrl: "",
+            lines: [
+              {
+                type: "progress",
+                label: "Premium",
+                used: 80,
+                limit: 100,
+                format: { kind: "percent" },
+              },
+              {
+                type: "progress",
+                label: "Budget",
+                used: 12,
+                limit: 40,
+                format: { kind: "dollars" },
+              },
+            ],
+          },
+          loading: false,
+          error: null,
+        },
+      },
+    })
+
+    expect(bars).toEqual([{ id: "copilot", fraction: 0.2 }])
+  })
+})

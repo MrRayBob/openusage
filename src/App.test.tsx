@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
 
 const state = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -20,10 +20,9 @@ const state = vi.hoisted(() => ({
   saveDisplayModeMock: vi.fn(),
   loadResetTimerDisplayModeMock: vi.fn(),
   saveResetTimerDisplayModeMock: vi.fn(),
-  loadTrayIconStyleMock: vi.fn(),
-  saveTrayIconStyleMock: vi.fn(),
-  loadTrayShowPercentageMock: vi.fn(),
-  saveTrayShowPercentageMock: vi.fn(),
+  loadMenubarIconStyleMock: vi.fn(),
+  saveMenubarIconStyleMock: vi.fn(),
+  migrateLegacyTraySettingsMock: vi.fn(),
   loadGlobalShortcutMock: vi.fn(),
   saveGlobalShortcutMock: vi.fn(),
   loadStartOnLoginMock: vi.fn(),
@@ -38,6 +37,7 @@ const state = vi.hoisted(() => ({
   trayGetByIdMock: vi.fn(),
   traySetIconMock: vi.fn(),
   traySetIconAsTemplateMock: vi.fn(),
+  traySetTitleMock: vi.fn(),
   resolveResourceMock: vi.fn(),
 }))
 
@@ -60,6 +60,17 @@ const eventState = vi.hoisted(() => {
     }),
   }
 })
+
+const menuState = vi.hoisted(() => ({
+  iconMenuItemConfigs: [] as Array<{ id: string; action?: () => void; enabled?: boolean; icon?: unknown }>,
+  iconMenuItemNewMock: vi.fn(),
+  iconMenuItemCloseMock: vi.fn(async () => undefined),
+  predefinedMenuItemNewMock: vi.fn(),
+  predefinedMenuItemCloseMock: vi.fn(async () => undefined),
+  menuNewMock: vi.fn(),
+  menuPopupMock: vi.fn(async () => undefined),
+  menuCloseMock: vi.fn(async () => undefined),
+}))
 
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children, onDragEnd }: { children: ReactNode; onDragEnd?: (event: any) => void }) => {
@@ -110,6 +121,47 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: eventState.listenMock,
 }))
 
+vi.mock("@tauri-apps/api/menu", () => ({
+  IconMenuItem: {
+    new: async (config: { id: string; action?: () => void }) => {
+      menuState.iconMenuItemConfigs.push(config)
+      menuState.iconMenuItemNewMock(config)
+      return {
+        ...config,
+        close: menuState.iconMenuItemCloseMock,
+      }
+    },
+  },
+  MenuItem: {
+    new: async (config: { id: string; action?: () => void }) => {
+      menuState.iconMenuItemConfigs.push(config)
+      menuState.iconMenuItemNewMock(config)
+      return {
+        ...config,
+        close: menuState.iconMenuItemCloseMock,
+      }
+    },
+  },
+  PredefinedMenuItem: {
+    new: async (config: unknown) => {
+      menuState.predefinedMenuItemNewMock(config)
+      return {
+        ...((typeof config === "object" && config !== null ? config : {}) as Record<string, unknown>),
+        close: menuState.predefinedMenuItemCloseMock,
+      }
+    },
+  },
+  Menu: {
+    new: async (config: unknown) => {
+      menuState.menuNewMock(config)
+      return {
+        popup: menuState.menuPopupMock,
+        close: menuState.menuCloseMock,
+      }
+    },
+  },
+}))
+
 vi.mock("@tauri-apps/api/tray", () => ({
   TrayIcon: {
     getById: state.trayGetByIdMock,
@@ -151,10 +203,14 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
   isEnabled: state.autostartIsEnabledMock,
 }))
 
-vi.mock("@/lib/tray-bars-icon", () => ({
-  getTrayIconSizePx: () => 36,
-  renderTrayBarsIcon: state.renderTrayBarsIconMock,
-}))
+vi.mock("@/lib/tray-bars-icon", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/tray-bars-icon")>("@/lib/tray-bars-icon")
+  return {
+    ...actual,
+    getTrayIconSizePx: () => 36,
+    renderTrayBarsIcon: state.renderTrayBarsIconMock,
+  }
+})
 
 vi.mock("@/hooks/use-probe-events", () => ({
   useProbeEvents: (handlers: { onResult: (output: any) => void; onBatchComplete: () => void }) => {
@@ -177,10 +233,9 @@ vi.mock("@/lib/settings", async () => {
     saveDisplayMode: state.saveDisplayModeMock,
     loadResetTimerDisplayMode: state.loadResetTimerDisplayModeMock,
     saveResetTimerDisplayMode: state.saveResetTimerDisplayModeMock,
-    loadTrayIconStyle: state.loadTrayIconStyleMock,
-    saveTrayIconStyle: state.saveTrayIconStyleMock,
-    loadTrayShowPercentage: state.loadTrayShowPercentageMock,
-    saveTrayShowPercentage: state.saveTrayShowPercentageMock,
+    loadMenubarIconStyle: state.loadMenubarIconStyleMock,
+    saveMenubarIconStyle: state.saveMenubarIconStyleMock,
+    migrateLegacyTraySettings: state.migrateLegacyTraySettingsMock,
     loadGlobalShortcut: state.loadGlobalShortcutMock,
     saveGlobalShortcut: state.saveGlobalShortcutMock,
     loadStartOnLogin: state.loadStartOnLoginMock,
@@ -191,9 +246,16 @@ vi.mock("@/lib/settings", async () => {
 })
 
 import { App } from "@/App"
+import { useAppPluginStore } from "@/stores/app-plugin-store"
+import { useAppPreferencesStore } from "@/stores/app-preferences-store"
+import { useAppUiStore } from "@/stores/app-ui-store"
 
 describe("App", () => {
   beforeEach(() => {
+    useAppUiStore.getState().resetState()
+    useAppPluginStore.getState().resetState()
+    useAppPreferencesStore.getState().resetState()
+
     state.probeHandlers = null
     state.invokeMock.mockReset()
     state.isTauriMock.mockReset()
@@ -212,10 +274,9 @@ describe("App", () => {
     state.saveDisplayModeMock.mockReset()
     state.loadResetTimerDisplayModeMock.mockReset()
     state.saveResetTimerDisplayModeMock.mockReset()
-    state.loadTrayIconStyleMock.mockReset()
-    state.saveTrayIconStyleMock.mockReset()
-    state.loadTrayShowPercentageMock.mockReset()
-    state.saveTrayShowPercentageMock.mockReset()
+    state.loadMenubarIconStyleMock.mockReset()
+    state.saveMenubarIconStyleMock.mockReset()
+    state.migrateLegacyTraySettingsMock.mockReset()
     state.loadGlobalShortcutMock.mockReset()
     state.saveGlobalShortcutMock.mockReset()
     state.loadStartOnLoginMock.mockReset()
@@ -229,7 +290,16 @@ describe("App", () => {
     state.trayGetByIdMock.mockReset()
     state.traySetIconMock.mockReset()
     state.traySetIconAsTemplateMock.mockReset()
+    state.traySetTitleMock.mockReset()
     state.resolveResourceMock.mockReset()
+    menuState.iconMenuItemConfigs.length = 0
+    menuState.iconMenuItemNewMock.mockReset()
+    menuState.iconMenuItemCloseMock.mockReset()
+    menuState.predefinedMenuItemNewMock.mockReset()
+    menuState.predefinedMenuItemCloseMock.mockReset()
+    menuState.menuNewMock.mockReset()
+    menuState.menuPopupMock.mockReset()
+    menuState.menuCloseMock.mockReset()
     eventState.handlers.clear()
     eventState.listenMock.mockReset()
     updaterState.checkMock.mockReset()
@@ -243,10 +313,9 @@ describe("App", () => {
     state.saveDisplayModeMock.mockResolvedValue(undefined)
     state.loadResetTimerDisplayModeMock.mockResolvedValue("relative")
     state.saveResetTimerDisplayModeMock.mockResolvedValue(undefined)
-    state.loadTrayIconStyleMock.mockResolvedValue("bars")
-    state.saveTrayIconStyleMock.mockResolvedValue(undefined)
-    state.loadTrayShowPercentageMock.mockResolvedValue(false)
-    state.saveTrayShowPercentageMock.mockResolvedValue(undefined)
+    state.loadMenubarIconStyleMock.mockResolvedValue("provider")
+    state.saveMenubarIconStyleMock.mockResolvedValue(undefined)
+    state.migrateLegacyTraySettingsMock.mockResolvedValue(undefined)
     state.loadGlobalShortcutMock.mockResolvedValue(null)
     state.saveGlobalShortcutMock.mockResolvedValue(undefined)
     state.loadStartOnLoginMock.mockResolvedValue(false)
@@ -268,6 +337,7 @@ describe("App", () => {
     state.trayGetByIdMock.mockResolvedValue({
       setIcon: state.traySetIconMock.mockResolvedValue(undefined),
       setIconAsTemplate: state.traySetIconAsTemplateMock.mockResolvedValue(undefined),
+      setTitle: state.traySetTitleMock.mockResolvedValue(undefined),
     })
     state.resolveResourceMock.mockResolvedValue("/resource/icons/tray-icon.png")
     state.invokeMock.mockImplementation(async (cmd: string) => {
@@ -282,6 +352,27 @@ describe("App", () => {
     state.loadPluginSettingsMock.mockResolvedValue({ order: ["a"], disabled: [] })
     state.loadAutoUpdateIntervalMock.mockResolvedValue(15)
   })
+
+  afterEach(() => {
+    delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight
+  })
+
+  const triggerPluginContextAction = async (
+    pluginName: string,
+    pluginId: string,
+    action: "reload" | "remove" | "inspect"
+  ) => {
+    menuState.iconMenuItemConfigs.length = 0
+    menuState.menuPopupMock.mockClear()
+
+    const pluginButton = await screen.findByRole("button", { name: pluginName })
+    fireEvent.contextMenu(pluginButton)
+    await waitFor(() => expect(menuState.menuPopupMock).toHaveBeenCalled())
+
+    const contextAction = menuState.iconMenuItemConfigs.find((item) => item.id === `ctx-${action}-${pluginId}`)?.action
+    expect(contextAction).toBeDefined()
+    return contextAction as () => void
+  }
 
   it("applies theme mode changes to document", async () => {
     const mq = {
@@ -311,11 +402,24 @@ describe("App", () => {
   })
 
   it("loads plugins, normalizes settings, and renders overview", async () => {
+    state.isTauriMock.mockReturnValue(true)
     render(<App />)
     await waitFor(() => expect(state.invokeMock).toHaveBeenCalledWith("list_plugins"))
     await waitFor(() => expect(state.savePluginSettingsMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.migrateLegacyTraySettingsMock).toHaveBeenCalled())
     expect(screen.getByText("Alpha")).toBeInTheDocument()
     expect(state.setSizeMock).toHaveBeenCalled()
+  })
+
+  it("calls migrateLegacyTraySettings before loadMenubarIconStyle during bootstrap", async () => {
+    state.isTauriMock.mockReturnValue(true)
+    render(<App />)
+    await waitFor(() => expect(state.migrateLegacyTraySettingsMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.loadMenubarIconStyleMock).toHaveBeenCalled())
+
+    const migrateOrder = state.migrateLegacyTraySettingsMock.mock.invocationCallOrder[0]
+    const loadOrder = state.loadMenubarIconStyleMock.mock.invocationCallOrder[0]
+    expect(migrateOrder).toBeLessThan(loadOrder)
   })
 
   it("does not track page_viewed on startup or navigation", async () => {
@@ -333,7 +437,7 @@ describe("App", () => {
     state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
     render(<App />)
     await waitFor(() => expect(state.invokeMock).toHaveBeenCalledWith("list_plugins"))
-    expect(screen.getAllByText("Alpha").length).toBeGreaterThan(0)
+    expect((await screen.findAllByText("Alpha")).length).toBeGreaterThan(0)
     expect(state.savePluginSettingsMock).not.toHaveBeenCalled()
   })
 
@@ -371,10 +475,6 @@ describe("App", () => {
     render(<App />)
     await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
 
-    // Init will trigger an icon generation attempt (bars exist but no data yet).
-    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
-    const callsBefore = state.renderTrayBarsIconMock.mock.calls.length
-
     state.probeHandlers?.onResult({
       providerId: "a",
       displayName: "Alpha",
@@ -382,12 +482,11 @@ describe("App", () => {
       lines: [{ type: "progress", label: "Session", used: 50, limit: 100, format: { kind: "percent" } }],
     })
 
-    await waitFor(() => expect(state.renderTrayBarsIconMock.mock.calls.length).toBeGreaterThan(callsBefore))
+    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
     await waitFor(() => expect(state.traySetIconMock).toHaveBeenCalled())
   })
 
-  it("uses one metric for circle tray style", async () => {
-    state.loadTrayIconStyleMock.mockResolvedValueOnce("circle")
+  it("renders first provider tray icon on launch before probe data", async () => {
     state.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "list_plugins") {
         return [
@@ -412,15 +511,16 @@ describe("App", () => {
     state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
 
     render(<App />)
-    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
 
+    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
     const firstCall = state.renderTrayBarsIconMock.mock.calls[0]?.[0]
-    expect(firstCall.style).toBe("circle")
-    expect(firstCall.bars).toHaveLength(1)
+    expect(firstCall.providerIconUrl).toBe("icon-a")
+    await waitFor(() => expect(state.traySetTitleMock).toHaveBeenCalledWith("--%"))
   })
 
-  it("uses provider tray style and passes first provider icon", async () => {
-    state.loadTrayIconStyleMock.mockResolvedValueOnce("provider")
+  it("bars style path passed to renderTrayBarsIcon when loadMenubarIconStyle returns bars", async () => {
+    state.loadMenubarIconStyleMock.mockResolvedValue("bars")
     state.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "list_plugins") {
         return [
@@ -445,30 +545,72 @@ describe("App", () => {
     state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
 
     render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
     await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
 
-    const firstCall = state.renderTrayBarsIconMock.mock.calls[0]?.[0]
-    expect(firstCall.style).toBe("provider")
-    expect(firstCall.bars).toHaveLength(1)
+    const firstCallArgs = state.renderTrayBarsIconMock.mock.calls[0]
+    expect(firstCallArgs).toBeDefined()
+    const firstCall = firstCallArgs![0]
+    expect(firstCall.style).toBe("bars")
+    expect(firstCall.bars.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it("donut style path passed to renderTrayBarsIcon and clears tray title", async () => {
+    state.loadMenubarIconStyleMock.mockResolvedValue("donut")
+    state.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_plugins") {
+        return [
+          {
+            id: "a",
+            name: "Alpha",
+            iconUrl: "icon-a",
+            primaryCandidates: ["Session"],
+            lines: [{ type: "progress", label: "Session", scope: "overview" }],
+          },
+          {
+            id: "b",
+            name: "Beta",
+            iconUrl: "icon-b",
+            primaryCandidates: ["Session"],
+            lines: [{ type: "progress", label: "Session", scope: "overview" }],
+          },
+        ]
+      }
+      return null
+    })
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
+
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
+
+    const firstCallArgs = state.renderTrayBarsIconMock.mock.calls[0]
+    expect(firstCallArgs).toBeDefined()
+    const firstCall = firstCallArgs![0]
+    expect(firstCall.style).toBe("donut")
     expect(firstCall.providerIconUrl).toBe("icon-a")
     expect(firstCall.percentText).toBeUndefined()
 
-    state.probeHandlers?.onResult({
-      providerId: "a",
-      displayName: "Alpha",
-      iconUrl: "icon-a",
-      lines: [{ type: "progress", label: "Session", used: 50, limit: 100, format: { kind: "percent" } }],
-    })
-
-    await waitFor(() => expect(state.renderTrayBarsIconMock.mock.calls.length).toBeGreaterThan(1))
-    const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
-    expect(latestCall.style).toBe("provider")
-    expect(latestCall.providerIconUrl).toBe("icon-a")
-    expect(latestCall.percentText).toBe("50%")
+    await waitFor(() => expect(state.traySetTitleMock).toHaveBeenCalledWith(""))
+    expect(state.traySetTitleMock).not.toHaveBeenCalledWith("--%")
   })
 
-  it("uses text-only tray style", async () => {
-    state.loadTrayIconStyleMock.mockResolvedValueOnce("textOnly")
+  it("renders percent text in tray icon when native title is unavailable", async () => {
+    state.trayGetByIdMock.mockResolvedValueOnce({
+      setIcon: state.traySetIconMock.mockResolvedValue(undefined),
+      setIconAsTemplate: state.traySetIconAsTemplateMock.mockResolvedValue(undefined),
+    })
+
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
+
+    const firstCall = state.renderTrayBarsIconMock.mock.calls[0]?.[0]
+    expect(firstCall.percentText).toBe("--%")
+    expect(state.traySetTitleMock).not.toHaveBeenCalled()
+  })
+
+  it("uses selected provider on detail view and keeps it on home/settings", async () => {
     state.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "list_plugins") {
         return [
@@ -501,38 +643,36 @@ describe("App", () => {
       iconUrl: "icon-a",
       lines: [{ type: "progress", label: "Session", used: 50, limit: 100, format: { kind: "percent" } }],
     })
-
-    await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
-    const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
-    expect(latestCall.style).toBe("textOnly")
-    expect(latestCall.bars).toHaveLength(1)
-    expect(latestCall.percentText).toBe("50%")
-  })
-
-  it("hides tray percent text when first fraction is missing and percentage enabled", async () => {
-    state.loadTrayShowPercentageMock.mockResolvedValueOnce(true)
-    state.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "list_plugins") {
-        return [
-          {
-            id: "a",
-            name: "Alpha",
-            iconUrl: "icon-a",
-            primaryCandidates: ["Session"],
-            lines: [{ type: "progress", label: "Session", scope: "overview" }],
-          },
-        ]
-      }
-      return null
+    state.probeHandlers?.onResult({
+      providerId: "b",
+      displayName: "Beta",
+      iconUrl: "icon-b",
+      lines: [{ type: "progress", label: "Session", used: 30, limit: 100, format: { kind: "percent" } }],
     })
-    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
 
-    render(<App />)
     await waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalled())
+    await userEvent.click(screen.getByRole("button", { name: "Beta" }))
 
-    const firstCall = state.renderTrayBarsIconMock.mock.calls[0]?.[0]
-    expect(firstCall.style).toBe("bars")
-    expect(firstCall.percentText).toBeUndefined()
+    await waitFor(() => {
+      const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
+      expect(latestCall.providerIconUrl).toBe("icon-b")
+    })
+    await waitFor(() => expect(state.traySetTitleMock).toHaveBeenCalledWith("70%"))
+
+    await userEvent.click(screen.getByRole("button", { name: "Home" }))
+    await waitFor(() => {
+      const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
+      expect(latestCall.providerIconUrl).toBe("icon-b")
+    })
+    await waitFor(() => expect(state.traySetTitleMock).toHaveBeenCalledWith("70%"))
+
+    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
+    await userEvent.click(settingsButtons[0])
+    await waitFor(() => {
+      const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
+      expect(latestCall.providerIconUrl).toBe("icon-b")
+    })
+    await waitFor(() => expect(state.traySetTitleMock).toHaveBeenCalledWith("70%"))
   })
 
   it("covers about open/close callbacks", async () => {
@@ -558,6 +698,40 @@ describe("App", () => {
     expect(state.saveDisplayModeMock).toHaveBeenCalledWith("used")
   })
 
+  it("settings UI persists menubar icon style change", async () => {
+    render(<App />)
+    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
+    await userEvent.click(settingsButtons[0])
+
+    expect(screen.getByText("Menubar Icon")).toBeVisible()
+    const barsRadio = await screen.findByRole("radio", { name: "Bars" })
+    await userEvent.click(barsRadio)
+    expect(state.saveMenubarIconStyleMock).toHaveBeenCalledWith("bars")
+
+    await waitFor(() => {
+      const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
+      expect(latestCall).toBeDefined()
+      expect(latestCall!.style).toBe("bars")
+    })
+  })
+
+  it("settings UI persists donut menubar icon style change", async () => {
+    render(<App />)
+    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
+    await userEvent.click(settingsButtons[0])
+
+    expect(screen.getByText("Menubar Icon")).toBeVisible()
+    const donutRadio = await screen.findByRole("radio", { name: "Donut" })
+    await userEvent.click(donutRadio)
+    expect(state.saveMenubarIconStyleMock).toHaveBeenCalledWith("donut")
+
+    await waitFor(() => {
+      const latestCall = state.renderTrayBarsIconMock.mock.calls.at(-1)?.[0]
+      expect(latestCall).toBeDefined()
+      expect(latestCall!.style).toBe("donut")
+    })
+  })
+
   it("logs when saving display mode fails", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
     state.saveDisplayModeMock.mockRejectedValueOnce(new Error("save display mode"))
@@ -572,85 +746,12 @@ describe("App", () => {
     errorSpy.mockRestore()
   })
 
-  it("updates tray icon style in settings", async () => {
+  it("does not render legacy bar icon controls in settings", async () => {
     render(<App />)
     const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
     await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByRole("radio", { name: "Circle" }))
-    expect(state.saveTrayIconStyleMock).toHaveBeenCalledWith("circle")
-  })
-
-  it("updates text-only tray icon style in settings", async () => {
-    render(<App />)
-    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
-    await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByRole("radio", { name: "%" }))
-    expect(state.saveTrayIconStyleMock).toHaveBeenCalledWith("textOnly")
-    expect(state.saveTrayShowPercentageMock).toHaveBeenCalledWith(true)
-  })
-
-  it("updates provider tray icon style in settings", async () => {
-    render(<App />)
-    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
-    await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByRole("radio", { name: "Provider" }))
-    expect(state.saveTrayIconStyleMock).toHaveBeenCalledWith("provider")
-    expect(state.saveTrayShowPercentageMock).toHaveBeenCalledWith(true)
-  })
-
-  it("updates tray show percentage in settings", async () => {
-    render(<App />)
-    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
-    await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByText("Show percentage"))
-    expect(state.saveTrayShowPercentageMock).toHaveBeenCalledWith(true)
-  })
-
-  it("keeps tray show percentage checkbox visible and disabled for mandatory styles", async () => {
-    const getTrayCheckbox = () => screen.getAllByRole("checkbox")[0]
-
-    render(<App />)
-    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
-    await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByRole("radio", { name: "%" }))
-    const textOnlyCheckbox = getTrayCheckbox()
-    expect(textOnlyCheckbox).toBeVisible()
-    expect(textOnlyCheckbox).toHaveAttribute("aria-disabled", "true")
-    expect(textOnlyCheckbox).toBeChecked()
-
-    await userEvent.click(await screen.findByRole("radio", { name: "Provider" }))
-    const providerCheckbox = getTrayCheckbox()
-    expect(providerCheckbox).toBeVisible()
-    expect(providerCheckbox).toHaveAttribute("aria-disabled", "true")
-    expect(providerCheckbox).toBeChecked()
-  })
-
-  it("auto-corrects tray show percentage when loading mandatory tray style", async () => {
-    state.loadTrayIconStyleMock.mockResolvedValueOnce("provider")
-    state.loadTrayShowPercentageMock.mockResolvedValueOnce(false)
-
-    render(<App />)
-
-    await waitFor(() => expect(state.saveTrayShowPercentageMock).toHaveBeenCalledWith(true))
-  })
-
-  it("logs when saving tray icon style fails", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    state.saveTrayIconStyleMock.mockRejectedValueOnce(new Error("save tray icon style"))
-
-    render(<App />)
-    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
-    await userEvent.click(settingsButtons[0])
-
-    await userEvent.click(await screen.findByRole("radio", { name: "Circle" }))
-    await waitFor(() => expect(errorSpy).toHaveBeenCalled())
-
-    errorSpy.mockRestore()
+    expect(screen.queryByText("Bar Icon")).not.toBeInTheDocument()
+    expect(screen.queryByText("Show percentage")).not.toBeInTheDocument()
   })
 
   it("shows provider not found when tray navigates to unknown view", async () => {
@@ -786,9 +887,22 @@ describe("App", () => {
     errorSpy.mockRestore()
   })
 
-  it("logs when loading tray icon style fails", async () => {
+  it("logs error when loading menubar icon style fails", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    state.loadTrayIconStyleMock.mockRejectedValueOnce(new Error("load tray icon style"))
+    state.loadMenubarIconStyleMock.mockRejectedValueOnce(new Error("load menubar icon style failed"))
+
+    render(<App />)
+    await waitFor(() => expect(state.invokeMock).toHaveBeenCalledWith("list_plugins"))
+    await waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith("Failed to load menubar icon style:", expect.any(Error))
+    )
+
+    errorSpy.mockRestore()
+  })
+
+  it("logs when migrating legacy tray settings fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    state.migrateLegacyTraySettingsMock.mockRejectedValueOnce(new Error("migrate legacy tray"))
 
     render(<App />)
     await waitFor(() => expect(state.invokeMock).toHaveBeenCalledWith("list_plugins"))
@@ -808,6 +922,21 @@ describe("App", () => {
     errorSpy.mockRestore()
   })
 
+  it("logs error when saving menubar icon style fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    state.saveMenubarIconStyleMock.mockRejectedValueOnce(new Error("save menubar icon style failed"))
+
+    render(<App />)
+    const settingsButtons = await screen.findAllByRole("button", { name: "Settings" })
+    await userEvent.click(settingsButtons[0])
+    await userEvent.click(await screen.findByRole("radio", { name: "Bars" }))
+
+    await waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith("Failed to save menubar icon style:", expect.any(Error))
+    )
+    errorSpy.mockRestore()
+  })
+
   it("retries a plugin on error", async () => {
     render(<App />)
     await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
@@ -820,6 +949,161 @@ describe("App", () => {
     const retry = await screen.findByRole("button", { name: "Retry" })
     await userEvent.click(retry)
     expect(state.startBatchMock).toHaveBeenCalledWith(["a"])
+  })
+
+  it("reloads plugin from sidebar context menu", async () => {
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.probeHandlers?.onResult({
+      providerId: "b",
+      displayName: "Beta",
+      iconUrl: "icon-b",
+      lines: [{ type: "text", label: "Now", value: "OK" }],
+    })
+    state.startBatchMock.mockClear()
+    state.trackMock.mockClear()
+
+    const reloadAction = await triggerPluginContextAction("Beta", "b", "reload")
+    const reloadConfig = menuState.iconMenuItemConfigs.find((item) => item.id === "ctx-reload-b")
+    expect(reloadConfig?.enabled).toBe(true)
+    reloadAction()
+
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalledWith(["b"]))
+    expect(state.trackMock).toHaveBeenCalledWith("provider_refreshed", { provider_id: "b" })
+  })
+
+  it("respects manual refresh cooldown for sidebar context menu reload", async () => {
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.probeHandlers?.onResult({
+      providerId: "a",
+      displayName: "Alpha",
+      iconUrl: "icon-a",
+      lines: [{ type: "text", label: "Now", value: "OK" }],
+    })
+    state.probeHandlers?.onResult({
+      providerId: "b",
+      displayName: "Beta",
+      iconUrl: "icon-b",
+      lines: [{ type: "text", label: "Now", value: "OK" }],
+    })
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(2))
+    state.startBatchMock.mockClear()
+    state.trackMock.mockClear()
+
+    const reloadAction = await triggerPluginContextAction("Beta", "b", "reload")
+    const firstReloadConfig = menuState.iconMenuItemConfigs.find((item) => item.id === "ctx-reload-b")
+    expect(firstReloadConfig?.enabled).toBe(true)
+    reloadAction()
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalledWith(["b"]))
+
+    state.probeHandlers?.onResult({
+      providerId: "b",
+      displayName: "Beta",
+      iconUrl: "icon-b",
+      lines: [{ type: "text", label: "Now", value: "OK" }],
+    })
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1))
+
+    state.startBatchMock.mockClear()
+    state.trackMock.mockClear()
+    const cooldownReloadAction = await triggerPluginContextAction("Beta", "b", "reload")
+    const cooldownReloadConfig = menuState.iconMenuItemConfigs.find((item) => item.id === "ctx-reload-b")
+    expect(cooldownReloadConfig?.enabled).toBe(false)
+    cooldownReloadAction()
+
+    expect(state.startBatchMock).not.toHaveBeenCalled()
+    expect(state.trackMock).not.toHaveBeenCalled()
+  })
+
+  it("closes sidebar context menu resources after popup", async () => {
+    render(<App />)
+
+    const pluginButton = await screen.findByRole("button", { name: "Alpha" })
+    fireEvent.contextMenu(pluginButton)
+    await waitFor(() => expect(menuState.menuPopupMock).toHaveBeenCalled())
+
+    expect(menuState.iconMenuItemConfigs).toHaveLength(3)
+    for (const config of menuState.iconMenuItemConfigs) {
+      expect(config.icon).toBeUndefined()
+    }
+
+    await waitFor(() => expect(menuState.menuCloseMock).toHaveBeenCalledTimes(1))
+    expect(menuState.iconMenuItemCloseMock).toHaveBeenCalledTimes(3)
+    expect(menuState.predefinedMenuItemCloseMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("opens devtools from sidebar context menu inspect action", async () => {
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.invokeMock.mockClear()
+
+    const inspectAction = await triggerPluginContextAction("Alpha", "a", "inspect")
+    inspectAction()
+
+    await waitFor(() => expect(state.invokeMock).toHaveBeenCalledWith("open_devtools"))
+  })
+
+  it("removes plugin from sidebar context menu", async () => {
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.startBatchMock.mockClear()
+    state.trackMock.mockClear()
+    state.savePluginSettingsMock.mockClear()
+
+    const removeAction = await triggerPluginContextAction("Beta", "b", "remove")
+    removeAction()
+
+    await waitFor(() =>
+      expect(state.savePluginSettingsMock).toHaveBeenCalledWith({ order: ["a", "b"], disabled: ["b"] })
+    )
+    expect(state.trackMock).toHaveBeenCalledWith("provider_toggled", { provider_id: "b", enabled: "false" })
+    expect(state.startBatchMock).not.toHaveBeenCalled()
+  })
+
+  it("ignores removing an already disabled plugin from context menu", async () => {
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a", "b"], disabled: [] })
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.trackMock.mockClear()
+    state.savePluginSettingsMock.mockClear()
+
+    const removeAction = await triggerPluginContextAction("Beta", "b", "remove")
+    removeAction()
+    await waitFor(() =>
+      expect(state.savePluginSettingsMock).toHaveBeenCalledWith({ order: ["a", "b"], disabled: ["b"] })
+    )
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Beta" })).not.toBeInTheDocument()
+    )
+    state.trackMock.mockClear()
+    state.savePluginSettingsMock.mockClear()
+
+    removeAction()
+    expect(state.savePluginSettingsMock).not.toHaveBeenCalled()
+    expect(state.trackMock).not.toHaveBeenCalled()
+  })
+
+  it("returns to home when removing the active plugin from context menu", async () => {
+    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
+    render(<App />)
+    await waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    state.savePluginSettingsMock.mockClear()
+
+    await userEvent.click(await screen.findByRole("button", { name: "Alpha" }))
+    const removeAction = await triggerPluginContextAction("Alpha", "a", "remove")
+    removeAction()
+
+    await waitFor(() =>
+      expect(state.savePluginSettingsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ disabled: expect.arrayContaining(["a"]) })
+      )
+    )
+    await screen.findByText("No providers enabled")
+    expect(screen.queryByText("Provider not found")).not.toBeInTheDocument()
   })
 
   it("shows empty state when all plugins disabled", async () => {
@@ -882,12 +1166,14 @@ describe("App", () => {
   })
 
   it("uses fallback monitor sizing when monitor missing", async () => {
+    state.isTauriMock.mockReturnValue(true)
     state.currentMonitorMock.mockResolvedValueOnce(null)
     render(<App />)
     await waitFor(() => expect(state.setSizeMock).toHaveBeenCalled())
   })
 
   it("resizes again via ResizeObserver callback", async () => {
+    state.isTauriMock.mockReturnValue(true)
     const OriginalResizeObserver = globalThis.ResizeObserver
     const observeSpy = vi.fn()
     globalThis.ResizeObserver = class ResizeObserverImmediate {
@@ -911,6 +1197,7 @@ describe("App", () => {
   })
 
   it("logs resize failures", async () => {
+    state.isTauriMock.mockReturnValue(true)
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
     state.setSizeMock.mockRejectedValueOnce(new Error("size fail"))
     render(<App />)
@@ -1407,56 +1694,157 @@ describe("App", () => {
     errorSpy.mockRestore()
   })
 
-  it("updates tray icon without requestAnimationFrame (regression test for hidden panel)", async () => {
+  it("queues a follow-up tray update when render is in-flight", async () => {
     vi.useFakeTimers()
 
-    // Stub requestAnimationFrame to never call the callback - simulates hidden panel throttling
-    const originalRaf = window.requestAnimationFrame
-    const rafSpy = vi.fn()
-    window.requestAnimationFrame = rafSpy
+    try {
+      let resolveFirstRender: ((value: unknown) => void) | null = null
+      const firstRender = new Promise<unknown>((resolve) => {
+        resolveFirstRender = resolve
+      })
 
-    // Setup plugin with primary progress
-    state.invokeMock.mockImplementationOnce(async (cmd: string) => {
-      if (cmd === "list_plugins") {
-        return [
-          {
-            id: "a",
-            name: "Alpha",
-            iconUrl: "icon-a",
-            primaryProgressLabel: "Session",
-            lines: [{ type: "progress", label: "Session", scope: "overview" }],
-          },
-        ]
-      }
-      return null
-    })
-    state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
+      state.invokeMock.mockImplementationOnce(async (cmd: string) => {
+        if (cmd === "list_plugins") {
+          return [
+            {
+              id: "a",
+              name: "Alpha",
+              iconUrl: "icon-a",
+              primaryCandidates: ["Session"],
+              lines: [{ type: "progress", label: "Session", scope: "overview" }],
+            },
+          ]
+        }
+        return null
+      })
+      state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
+      state.renderTrayBarsIconMock
+        .mockReturnValueOnce(firstRender)
+        .mockResolvedValueOnce({})
+
+      render(<App />)
+      await vi.waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+      await vi.waitFor(() => expect(state.trayGetByIdMock).toHaveBeenCalled())
+      await vi.waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalledTimes(1))
+
+      state.probeHandlers?.onResult({
+        providerId: "a",
+        displayName: "Alpha",
+        iconUrl: "icon-a",
+        lines: [{ type: "progress", label: "Session", used: 20, limit: 100, format: { kind: "percent" } }],
+      })
+      await vi.advanceTimersByTimeAsync(600)
+      expect(state.renderTrayBarsIconMock).toHaveBeenCalledTimes(1)
+
+      resolveFirstRender?.({})
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.waitFor(() => expect(state.renderTrayBarsIconMock).toHaveBeenCalledTimes(2))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("waits for tray resource before initial provider tray update", async () => {
+    let resolveResourcePath: ((value: string) => void) | null = null
+    state.resolveResourceMock.mockReturnValueOnce(new Promise<string>((resolve) => {
+      resolveResourcePath = resolve
+    }))
 
     render(<App />)
-    await vi.waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+    await waitFor(() => expect(state.trayGetByIdMock).toHaveBeenCalled())
+    expect(state.traySetIconMock).not.toHaveBeenCalled()
 
-    // Wait for tray to be ready
-    await vi.waitFor(() => expect(state.trayGetByIdMock).toHaveBeenCalled())
+    resolveResourcePath?.("/resource/icons/tray-icon.png")
 
-    // Clear any initial calls
-    state.traySetIconMock.mockClear()
+    await waitFor(() => expect(state.traySetIconMock).toHaveBeenCalledWith({}))
+    expect(state.traySetIconAsTemplateMock).toHaveBeenCalledWith(true)
+    expect(state.traySetTitleMock).toHaveBeenCalledWith("--%")
+  })
 
-    // Trigger a probe result
-    state.probeHandlers?.onResult({
-      providerId: "a",
-      displayName: "Alpha",
-      iconUrl: "icon-a",
-      lines: [{ type: "progress", label: "Session", used: 50, limit: 100, format: { kind: "percent" } }],
-    })
+  it("clears pending tray timer on unmount", async () => {
+    vi.useFakeTimers()
 
-    // Advance timers to trigger the debounced tray update (500ms probe debounce)
-    await vi.advanceTimersByTimeAsync(600)
+    try {
+      state.invokeMock.mockImplementationOnce(async (cmd: string) => {
+        if (cmd === "list_plugins") {
+          return [
+            {
+              id: "a",
+              name: "Alpha",
+              iconUrl: "icon-a",
+              primaryCandidates: ["Session"],
+              lines: [{ type: "progress", label: "Session", scope: "overview" }],
+            },
+          ]
+        }
+        return null
+      })
+      state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
 
-    // Tray icon should have been updated even though requestAnimationFrame was never called
-    expect(rafSpy).not.toHaveBeenCalled()
-    expect(state.traySetIconMock).toHaveBeenCalled()
+      const { unmount } = render(<App />)
+      await vi.waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
 
-    window.requestAnimationFrame = originalRaf
-    vi.useRealTimers()
+      state.renderTrayBarsIconMock.mockClear()
+      state.probeHandlers?.onResult({
+        providerId: "a",
+        displayName: "Alpha",
+        iconUrl: "icon-a",
+        lines: [{ type: "progress", label: "Session", used: 30, limit: 100, format: { kind: "percent" } }],
+      })
+
+      unmount()
+      await vi.advanceTimersByTimeAsync(600)
+
+      expect(state.renderTrayBarsIconMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("updates tray icon without requestAnimationFrame (regression test for hidden panel)", async () => {
+    vi.useFakeTimers()
+    const originalRaf = window.requestAnimationFrame
+    try {
+      const rafSpy = vi.fn()
+      window.requestAnimationFrame = rafSpy
+
+      state.invokeMock.mockImplementationOnce(async (cmd: string) => {
+        if (cmd === "list_plugins") {
+          return [
+            {
+              id: "a",
+              name: "Alpha",
+              iconUrl: "icon-a",
+              primaryProgressLabel: "Session",
+              lines: [{ type: "progress", label: "Session", scope: "overview" }],
+            },
+          ]
+        }
+        return null
+      })
+      state.loadPluginSettingsMock.mockResolvedValueOnce({ order: ["a"], disabled: [] })
+
+      render(<App />)
+      await vi.waitFor(() => expect(state.startBatchMock).toHaveBeenCalled())
+      await vi.waitFor(() => expect(state.trayGetByIdMock).toHaveBeenCalled())
+
+      state.traySetIconMock.mockClear()
+
+      state.probeHandlers?.onResult({
+        providerId: "a",
+        displayName: "Alpha",
+        iconUrl: "icon-a",
+        lines: [{ type: "progress", label: "Session", used: 50, limit: 100, format: { kind: "percent" } }],
+      })
+
+      await vi.advanceTimersByTimeAsync(600)
+
+      expect(rafSpy).not.toHaveBeenCalled()
+      expect(state.traySetIconMock).toHaveBeenCalled()
+    } finally {
+      window.requestAnimationFrame = originalRaf
+      vi.useRealTimers()
+    }
   })
 })

@@ -2,54 +2,66 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   DEFAULT_AUTO_UPDATE_INTERVAL,
   DEFAULT_DISPLAY_MODE,
+  DEFAULT_GLOBAL_SHORTCUT,
+  DEFAULT_MENUBAR_ICON_STYLE,
   DEFAULT_PLUGIN_SETTINGS,
   DEFAULT_RESET_TIMER_DISPLAY_MODE,
   DEFAULT_COPILOT_BUDGET_USD,
   DEFAULT_START_ON_LOGIN,
-  DEFAULT_TRAY_ICON_STYLE,
-  DEFAULT_TRAY_SHOW_PERCENTAGE,
   DEFAULT_THEME_MODE,
   arePluginSettingsEqual,
   getEnabledPluginIds,
   loadAutoUpdateInterval,
   loadCopilotBudgetUsd,
   loadDisplayMode,
+  loadGlobalShortcut,
+  loadMenubarIconStyle,
   loadPluginSettings,
   loadResetTimerDisplayMode,
   loadStartOnLogin,
-  loadTrayIconStyle,
-  loadTrayShowPercentage,
+  migrateLegacyTraySettings,
   loadThemeMode,
   normalizePluginSettings,
   saveAutoUpdateInterval,
   saveCopilotBudgetUsd,
   saveDisplayMode,
+  saveGlobalShortcut,
+  saveMenubarIconStyle,
   savePluginSettings,
   saveResetTimerDisplayMode,
   saveStartOnLogin,
-  saveTrayIconStyle,
-  saveTrayShowPercentage,
   saveThemeMode,
 } from "@/lib/settings"
 import type { PluginMeta } from "@/lib/plugin-types"
 
 const storeState = new Map<string, unknown>()
+const storeDeleteMock = vi.fn()
+const storeSaveMock = vi.fn()
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   LazyStore: class {
     async get<T>(key: string): Promise<T | null> {
-      return (storeState.get(key) as T | undefined) ?? null
+      if (!storeState.has(key)) return undefined as T | null
+      return storeState.get(key) as T | null
     }
     async set<T>(key: string, value: T): Promise<void> {
       storeState.set(key, value)
     }
-    async save(): Promise<void> {}
+    async delete(key: string): Promise<void> {
+      storeDeleteMock(key)
+      storeState.delete(key)
+    }
+    async save(): Promise<void> {
+      storeSaveMock()
+    }
   },
 }))
 
 describe("settings", () => {
   beforeEach(() => {
     storeState.clear()
+    storeDeleteMock.mockReset()
+    storeSaveMock.mockReset()
   })
 
   it("loads defaults when no settings stored", async () => {
@@ -176,52 +188,140 @@ describe("settings", () => {
     await expect(loadResetTimerDisplayMode()).resolves.toBe(DEFAULT_RESET_TIMER_DISPLAY_MODE)
   })
 
-  it("loads default tray icon style when missing", async () => {
-    await expect(loadTrayIconStyle()).resolves.toBe(DEFAULT_TRAY_ICON_STYLE)
-  })
-
-  it("loads stored tray icon style", async () => {
-    storeState.set("trayIconStyle", "circle")
-    await expect(loadTrayIconStyle()).resolves.toBe("circle")
-  })
-
-  it("loads stored provider tray icon style", async () => {
+  it("migrates and removes legacy tray settings keys", async () => {
     storeState.set("trayIconStyle", "provider")
-    await expect(loadTrayIconStyle()).resolves.toBe("provider")
+    storeState.set("trayShowPercentage", false)
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.has("trayIconStyle")).toBe(false)
+    expect(storeState.has("trayShowPercentage")).toBe(false)
   })
 
-  it("saves tray icon style", async () => {
-    await saveTrayIconStyle("textOnly")
-    await expect(loadTrayIconStyle()).resolves.toBe("textOnly")
+  it("migrates legacy trayIconStyle=bars to menubarIconStyle=bars when new key not set", async () => {
+    storeState.set("trayIconStyle", "bars")
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.get("menubarIconStyle")).toBe("bars")
+    expect(storeState.has("trayIconStyle")).toBe(false)
   })
 
-  it("saves provider tray icon style", async () => {
-    await saveTrayIconStyle("provider")
-    await expect(loadTrayIconStyle()).resolves.toBe("provider")
+  it("does not overwrite menubarIconStyle when already set during legacy migration", async () => {
+    storeState.set("trayIconStyle", "bars")
+    storeState.set("menubarIconStyle", "provider")
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.get("menubarIconStyle")).toBe("provider")
+    expect(storeState.has("trayIconStyle")).toBe(false)
   })
 
-  it("falls back to default for invalid tray icon style", async () => {
-    storeState.set("trayIconStyle", "invalid")
-    await expect(loadTrayIconStyle()).resolves.toBe(DEFAULT_TRAY_ICON_STYLE)
+  it("migrates legacy trayIconStyle=circle to menubarIconStyle=donut when new key not set", async () => {
+    storeState.set("trayIconStyle", "circle")
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.get("menubarIconStyle")).toBe("donut")
+    expect(storeState.has("trayIconStyle")).toBe(false)
   })
 
-  it("loads default tray show percentage when missing", async () => {
-    await expect(loadTrayShowPercentage()).resolves.toBe(DEFAULT_TRAY_SHOW_PERCENTAGE)
+  it("does not set menubarIconStyle when legacy trayIconStyle is non-bars", async () => {
+    storeState.set("trayIconStyle", "provider")
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.has("menubarIconStyle")).toBe(false)
+    expect(storeState.has("trayIconStyle")).toBe(false)
   })
 
-  it("loads stored tray show percentage", async () => {
+  it("loads default menubar icon style when missing", async () => {
+    await expect(loadMenubarIconStyle()).resolves.toBe(DEFAULT_MENUBAR_ICON_STYLE)
+  })
+
+  it("loads stored menubar icon style", async () => {
+    storeState.set("menubarIconStyle", "bars")
+    await expect(loadMenubarIconStyle()).resolves.toBe("bars")
+  })
+
+  it("saves menubar icon style", async () => {
+    await saveMenubarIconStyle("bars")
+    await expect(loadMenubarIconStyle()).resolves.toBe("bars")
+  })
+
+  it("loads stored menubar donut icon style", async () => {
+    storeState.set("menubarIconStyle", "donut")
+    await expect(loadMenubarIconStyle()).resolves.toBe("donut")
+  })
+
+  it("saves menubar donut icon style", async () => {
+    await saveMenubarIconStyle("donut")
+    await expect(loadMenubarIconStyle()).resolves.toBe("donut")
+  })
+
+  it("falls back to default for invalid menubar icon style", async () => {
+    storeState.set("menubarIconStyle", "invalid")
+    await expect(loadMenubarIconStyle()).resolves.toBe(DEFAULT_MENUBAR_ICON_STYLE)
+  })
+
+  it("skips legacy tray migration when keys are absent", async () => {
+    await expect(migrateLegacyTraySettings()).resolves.toBeUndefined()
+    expect(storeState.has("trayIconStyle")).toBe(false)
+    expect(storeState.has("trayShowPercentage")).toBe(false)
+    expect(storeDeleteMock).not.toHaveBeenCalled()
+    expect(storeSaveMock).not.toHaveBeenCalled()
+  })
+
+  it("migrates when only one legacy tray key is present", async () => {
     storeState.set("trayShowPercentage", true)
-    await expect(loadTrayShowPercentage()).resolves.toBe(true)
+
+    await migrateLegacyTraySettings()
+
+    expect(storeState.has("trayShowPercentage")).toBe(false)
+    expect(storeDeleteMock).toHaveBeenCalledWith("trayShowPercentage")
+    expect(storeSaveMock).toHaveBeenCalledTimes(1)
   })
 
-  it("saves tray show percentage", async () => {
-    await saveTrayShowPercentage(true)
-    await expect(loadTrayShowPercentage()).resolves.toBe(true)
+  it("falls back to nulling legacy keys if delete is unavailable", async () => {
+    const { LazyStore } = await import("@tauri-apps/plugin-store")
+    const prototype = LazyStore.prototype as { delete?: (key: string) => Promise<void> }
+    const originalDelete = prototype.delete
+
+    // Simulate older store implementation with no delete() method.
+    prototype.delete = undefined
+    storeState.set("trayIconStyle", "provider")
+
+    try {
+      await migrateLegacyTraySettings()
+    } finally {
+      prototype.delete = originalDelete
+    }
+
+    expect(storeDeleteMock).not.toHaveBeenCalled()
+    expect(storeState.get("trayIconStyle")).toBeNull()
+    expect(storeSaveMock).toHaveBeenCalledTimes(1)
   })
 
-  it("falls back to default for invalid tray show percentage", async () => {
-    storeState.set("trayShowPercentage", "invalid")
-    await expect(loadTrayShowPercentage()).resolves.toBe(DEFAULT_TRAY_SHOW_PERCENTAGE)
+  it("loads default global shortcut when missing", async () => {
+    await expect(loadGlobalShortcut()).resolves.toBe(DEFAULT_GLOBAL_SHORTCUT)
+  })
+
+  it("loads stored global shortcut values", async () => {
+    storeState.set("globalShortcut", "CommandOrControl+Shift+O")
+    await expect(loadGlobalShortcut()).resolves.toBe("CommandOrControl+Shift+O")
+
+    storeState.set("globalShortcut", null)
+    await expect(loadGlobalShortcut()).resolves.toBe(null)
+  })
+
+  it("falls back to default for invalid global shortcut values", async () => {
+    storeState.set("globalShortcut", 1234)
+    await expect(loadGlobalShortcut()).resolves.toBe(DEFAULT_GLOBAL_SHORTCUT)
+  })
+
+  it("saves global shortcut values", async () => {
+    await saveGlobalShortcut("CommandOrControl+Shift+O")
+    await expect(loadGlobalShortcut()).resolves.toBe("CommandOrControl+Shift+O")
   })
 
   it("loads default start on login when missing", async () => {

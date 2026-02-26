@@ -23,21 +23,48 @@ function isProgressLine(line: PluginOutput["lines"][number]): line is ProgressLi
   return line.type === "progress"
 }
 
+function findProgressLine(data: PluginOutput, label: string): ProgressLine | undefined {
+  return data.lines.find(
+    (line): line is ProgressLine =>
+      isProgressLine(line) && line.label === label
+  )
+}
+
+function getFractionFromProgressLine(line: ProgressLine, displayMode: DisplayMode): number | undefined {
+  if (line.limit <= 0) return undefined
+  const shownAmount =
+    displayMode === "used"
+      ? line.used
+      : line.limit - line.used
+  return clamp01(shownAmount / line.limit)
+}
+
 export function getTrayPrimaryBars(args: {
   pluginsMeta: PluginMeta[]
   pluginSettings: PluginSettings | null
   pluginStates: Record<string, PluginState | undefined>
   maxBars?: number
   displayMode?: DisplayMode
+  pluginId?: string
 }): TrayPrimaryBar[] {
-  const { pluginsMeta, pluginSettings, pluginStates, maxBars = 4, displayMode = DEFAULT_DISPLAY_MODE } = args
+  const {
+    pluginsMeta,
+    pluginSettings,
+    pluginStates,
+    maxBars = 4,
+    displayMode = DEFAULT_DISPLAY_MODE,
+    pluginId,
+  } = args
   if (!pluginSettings) return []
 
   const metaById = new Map(pluginsMeta.map((p) => [p.id, p]))
   const disabled = new Set(pluginSettings.disabled)
+  const orderedIds = pluginId
+    ? [pluginId]
+    : pluginSettings.order
 
   const out: TrayPrimaryBar[] = []
-  for (const id of pluginSettings.order) {
+  for (const id of orderedIds) {
     if (disabled.has(id)) continue
     const meta = metaById.get(id)
     if (!meta) continue
@@ -55,16 +82,25 @@ export function getTrayPrimaryBars(args: {
         data.lines.some((line) => isProgressLine(line) && line.label === label)
       )
       if (primaryLabel) {
-        const primaryLine = data.lines.find(
-          (line): line is ProgressLine =>
-            isProgressLine(line) && line.label === primaryLabel
-        )
-        if (primaryLine && primaryLine.limit > 0) {
-          const shownAmount =
-            displayMode === "used"
-              ? primaryLine.used
-              : primaryLine.limit - primaryLine.used
-          fraction = clamp01(shownAmount / primaryLine.limit)
+        const primaryLine = findProgressLine(data, primaryLabel)
+        if (primaryLine) {
+          const shouldUseCopilotBudgetFallback =
+            id === "copilot" &&
+            displayMode === "left" &&
+            primaryLine.label === "Premium" &&
+            primaryLine.used >= primaryLine.limit
+
+          if (shouldUseCopilotBudgetFallback) {
+            const budgetLine = findProgressLine(data, "Budget")
+            if (budgetLine && budgetLine.limit > 0) {
+              // When premium requests are exhausted, show actual budget spent in the tray bars.
+              fraction = clamp01(budgetLine.used / budgetLine.limit)
+            } else {
+              fraction = getFractionFromProgressLine(primaryLine, displayMode)
+            }
+          } else {
+            fraction = getFractionFromProgressLine(primaryLine, displayMode)
+          }
         }
       }
     }
@@ -75,4 +111,3 @@ export function getTrayPrimaryBars(args: {
 
   return out
 }
-

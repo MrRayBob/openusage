@@ -110,7 +110,7 @@ describe("claude plugin", () => {
     const plugin = await loadPlugin()
     const result = plugin.probe(ctx)
     expect(result.lines.find((line) => line.label === "Sonnet")).toBeTruthy()
-    expect(result.lines.find((line) => line.label === "Extra usage")).toBeTruthy()
+    expect(result.lines.find((line) => line.label === "Extra usage spent")).toBeTruthy()
   })
 
   it("uses keychain credentials when value is hex-encoded JSON", async () => {
@@ -258,7 +258,7 @@ describe("claude plugin", () => {
     expect(() => plugin.probe(ctx)).toThrow("Usage request failed")
   })
 
-  it("returns status when no usage data", async () => {
+  it("shows status badge when no usage data and ccusage is unavailable", async () => {
     const ctx = makeCtx()
     ctx.host.fs.readText = () => JSON.stringify({ claudeAiOauth: { accessToken: "token" } })
     ctx.host.fs.exists = () => true
@@ -268,7 +268,12 @@ describe("claude plugin", () => {
     })
     const plugin = await loadPlugin()
     const result = plugin.probe(ctx)
-    expect(result.lines[0].text).toBe("No usage data")
+    expect(result.lines.find((l) => l.label === "Today")).toBeUndefined()
+    expect(result.lines.find((l) => l.label === "Yesterday")).toBeUndefined()
+    expect(result.lines.find((l) => l.label === "Last 30 Days")).toBeUndefined()
+    const statusLine = result.lines.find((l) => l.label === "Status")
+    expect(statusLine).toBeTruthy()
+    expect(statusLine.text).toBe("No usage data")
   })
 
   it("passes resetsAt through as ISO when present", async () => {
@@ -580,6 +585,117 @@ describe("claude plugin", () => {
     expect(() => plugin.probe(ctx)).not.toThrow()
   })
 
+  it("falls back to keychain when file oauth exists but has no access token", async () => {
+    const ctx = makeCtx()
+    ctx.host.fs.exists = () => true
+    ctx.host.fs.readText = () => JSON.stringify({ claudeAiOauth: { refreshToken: "only-refresh" } })
+    ctx.host.keychain.readGenericPassword.mockReturnValue(
+      JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token", subscriptionType: "pro" } })
+    )
+    ctx.host.http.request.mockReturnValue({
+      status: 200,
+      bodyText: JSON.stringify({
+        five_hour: { utilization: 10, resets_at: "2099-01-01T00:00:00.000Z" },
+      }),
+    })
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(result.lines.find((line) => line.label === "Session")).toBeTruthy()
+  })
+
+  it("treats keychain oauth without access token as not logged in", async () => {
+    const ctx = makeCtx()
+    ctx.host.fs.exists = () => false
+    ctx.host.keychain.readGenericPassword.mockReturnValue(
+      JSON.stringify({ claudeAiOauth: { refreshToken: "only-refresh" } })
+    )
+    const plugin = await loadPlugin()
+    expect(() => plugin.probe(ctx)).toThrow("Not logged in")
+  })
+
+  it("continues with existing token when refresh cannot return a usable token", async () => {
+    const baseCreds = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: "token",
+        refreshToken: "refresh",
+        expiresAt: Date.now() - 1,
+      },
+    })
+
+    const runCase = async (refreshResp) => {
+      const ctx = makeCtx()
+      ctx.host.fs.exists = () => true
+      ctx.host.fs.readText = () => baseCreds
+      ctx.host.http.request.mockImplementation((opts) => {
+        if (String(opts.url).includes("/v1/oauth/token")) return refreshResp
+        return {
+          status: 200,
+          bodyText: JSON.stringify({
+            five_hour: { utilization: 10, resets_at: "2099-01-01T00:00:00.000Z" },
+          }),
+        }
+      })
+
+      delete globalThis.__openusage_plugin
+      vi.resetModules()
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      expect(result.lines.find((line) => line.label === "Session")).toBeTruthy()
+    }
+
+    await runCase({ status: 500, bodyText: "" })
+    await runCase({ status: 200, bodyText: "not-json" })
+    await runCase({ status: 200, bodyText: JSON.stringify({}) })
+  })
+
+  it("skips proactive refresh when token is not near expiry", async () => {
+    const ctx = makeCtx()
+    const now = 1_700_000_000_000
+    vi.spyOn(Date, "now").mockReturnValue(now)
+    ctx.host.fs.exists = () => true
+    ctx.host.fs.readText = () =>
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "token",
+          refreshToken: "refresh",
+          expiresAt: now + 24 * 60 * 60 * 1000,
+          subscriptionType: "pro",
+        },
+      })
+    ctx.host.http.request.mockReturnValue({
+      status: 200,
+      bodyText: JSON.stringify({
+        five_hour: { utilization: 10, resets_at: "2099-01-01T00:00:00.000Z" },
+      }),
+    })
+
+    const plugin = await loadPlugin()
+    plugin.probe(ctx)
+    expect(
+      ctx.host.http.request.mock.calls.some((call) => String(call[0]?.url).includes("/v1/oauth/token"))
+    ).toBe(false)
+  })
+
+  it("handles malformed ccusage payload shape as runner_failed", async () => {
+    const ctx = makeCtx()
+    ctx.host.fs.exists = () => true
+    ctx.host.fs.readText = () => JSON.stringify({ claudeAiOauth: { accessToken: "token", subscriptionType: "   " } })
+    ctx.host.http.request.mockReturnValue({
+      status: 200,
+      bodyText: JSON.stringify({
+        five_hour: { utilization: 10, resets_at: "2099-01-01T00:00:00.000Z" },
+      }),
+    })
+    ctx.host.ccusage.query = vi.fn(() => ({ status: "ok", data: {} }))
+
+    const plugin = await loadPlugin()
+    const result = plugin.probe(ctx)
+    expect(result.plan).toBeNull()
+    expect(result.lines.find((line) => line.label === "Session")).toBeTruthy()
+    expect(result.lines.find((line) => line.label === "Today")).toBeUndefined()
+  })
+
   it("throws usage request failed after refresh when retry errors", async () => {
     const ctx = makeCtx()
     ctx.host.fs.exists = () => true
@@ -627,5 +743,270 @@ describe("claude plugin", () => {
 
     const plugin = await loadPlugin()
     expect(() => plugin.probe(ctx)).toThrow("Token expired")
+  })
+
+  describe("token usage: ccusage integration", () => {
+    const CRED_JSON = JSON.stringify({ claudeAiOauth: { accessToken: "tok", subscriptionType: "pro" } })
+    const USAGE_RESPONSE = JSON.stringify({
+      five_hour: { utilization: 30, resets_at: "2099-01-01T00:00:00.000Z" },
+      seven_day: { utilization: 50, resets_at: "2099-01-01T00:00:00.000Z" },
+    })
+
+    function makeProbeCtx({ ccusageResult = { status: "runner_failed" } } = {}) {
+      const ctx = makeCtx()
+      ctx.host.fs.exists = () => true
+      ctx.host.fs.readText = () => CRED_JSON
+      ctx.host.http.request.mockReturnValue({ status: 200, bodyText: USAGE_RESPONSE })
+      ctx.host.ccusage.query = vi.fn(() => ccusageResult)
+      return ctx
+    }
+
+    function okUsage(daily) {
+      return { status: "ok", data: { daily: daily } }
+    }
+
+    function localDayKey(date) {
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, "0")
+      const day = String(date.getDate()).padStart(2, "0")
+      return year + "-" + month + "-" + day
+    }
+
+    function localCompactDayKey(date) {
+      const year = String(date.getFullYear())
+      const month = String(date.getMonth() + 1).padStart(2, "0")
+      const day = String(date.getDate()).padStart(2, "0")
+      return year + month + day
+    }
+
+    it("omits token lines when ccusage reports no_runner", async () => {
+      const ctx = makeProbeCtx({ ccusageResult: { status: "no_runner" } })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      expect(result.lines.find((l) => l.label === "Today")).toBeUndefined()
+      expect(result.lines.find((l) => l.label === "Yesterday")).toBeUndefined()
+      expect(result.lines.find((l) => l.label === "Last 30 Days")).toBeUndefined()
+    })
+
+    it("rate-limit lines still appear when ccusage reports runner_failed", async () => {
+      const ctx = makeProbeCtx({ ccusageResult: { status: "runner_failed" } })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      expect(result.lines.find((l) => l.label === "Session")).toBeTruthy()
+      expect(result.lines.find((l) => l.label === "Today")).toBeUndefined()
+      expect(result.lines.find((l) => l.label === "Yesterday")).toBeUndefined()
+    })
+
+    it("adds Today line when ccusage returns today's data", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 150, totalCost: 0.75 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.type).toBe("text")
+      expect(todayLine.value).toContain("150 tokens")
+      expect(todayLine.value).toContain("$0.75")
+    })
+
+    it("adds Yesterday line when ccusage returns yesterday's data", async () => {
+      const yesterday = new Date()
+      yesterday.setDate(yesterday.getDate() - 1)
+      const yesterdayKey = localDayKey(yesterday)
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: yesterdayKey, inputTokens: 80, outputTokens: 40, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 120, totalCost: 0.6 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const yesterdayLine = result.lines.find((l) => l.label === "Yesterday")
+      expect(yesterdayLine).toBeTruthy()
+      expect(yesterdayLine.value).toContain("120 tokens")
+      expect(yesterdayLine.value).toContain("$0.60")
+    })
+
+    it("matches locale-formatted dates for today and yesterday (regression)", async () => {
+      const now = new Date()
+      const monthToday = now.toLocaleString("en-US", { month: "short" })
+      const dayToday = String(now.getDate()).padStart(2, "0")
+      const yearToday = now.getFullYear()
+      const todayLabel = monthToday + " " + dayToday + ", " + yearToday
+
+      const yesterday = new Date(now.getTime())
+      yesterday.setDate(yesterday.getDate() - 1)
+      const monthYesterday = yesterday.toLocaleString("en-US", { month: "short" })
+      const dayYesterday = String(yesterday.getDate()).padStart(2, "0")
+      const yearYesterday = yesterday.getFullYear()
+      const yesterdayLabel = monthYesterday + " " + dayYesterday + ", " + yearYesterday
+
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayLabel, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 150, totalCost: 0.75 },
+            { date: yesterdayLabel, inputTokens: 80, outputTokens: 40, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 120, totalCost: 0.6 },
+          ]),
+      })
+
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).toContain("150 tokens")
+      expect(todayLine.value).toContain("$0.75")
+
+      const yesterdayLine = result.lines.find((l) => l.label === "Yesterday")
+      expect(yesterdayLine).toBeTruthy()
+      expect(yesterdayLine.value).toContain("120 tokens")
+      expect(yesterdayLine.value).toContain("$0.60")
+    })
+
+    it("adds Last 30 Days line summing all daily entries", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 150, totalCost: 0.5 },
+            { date: "2026-02-01", inputTokens: 200, outputTokens: 100, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 300, totalCost: 1.0 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const last30 = result.lines.find((l) => l.label === "Last 30 Days")
+      expect(last30).toBeTruthy()
+      expect(last30.value).toContain("450 tokens")
+      expect(last30.value).toContain("$1.50")
+    })
+
+    it("shows empty Today/Yesterday and Last 30 Days when today has no entry", async () => {
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: "2026-02-01", inputTokens: 500, outputTokens: 100, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 600, totalCost: 2.0 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).toContain("$0.00")
+      expect(todayLine.value).toContain("0 tokens")
+      const yesterdayLine = result.lines.find((l) => l.label === "Yesterday")
+      expect(yesterdayLine).toBeTruthy()
+      expect(yesterdayLine.value).toContain("$0.00")
+      expect(yesterdayLine.value).toContain("0 tokens")
+      const last30 = result.lines.find((l) => l.label === "Last 30 Days")
+      expect(last30).toBeTruthy()
+      expect(last30.value).toContain("600 tokens")
+    })
+
+    it("shows empty Today state when ccusage returns ok with empty daily array", async () => {
+      const ctx = makeProbeCtx({ ccusageResult: okUsage([]) })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).toContain("$0.00")
+      expect(todayLine.value).toContain("0 tokens")
+      const yesterdayLine = result.lines.find((l) => l.label === "Yesterday")
+      expect(yesterdayLine).toBeTruthy()
+      expect(yesterdayLine.value).toContain("$0.00")
+      expect(yesterdayLine.value).toContain("0 tokens")
+      expect(result.lines.find((l) => l.label === "Last 30 Days")).toBeUndefined()
+    })
+
+    it("omits cost when totalCost is null", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 500, outputTokens: 100, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 600, totalCost: null },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).not.toContain("$")
+      expect(todayLine.value).toContain("600 tokens")
+    })
+
+    it("shows empty Today state when today's totals are zero (regression)", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).toContain("$0.00")
+      expect(todayLine.value).toContain("0 tokens")
+    })
+
+    it("shows empty Yesterday state when yesterday's totals are zero (regression)", async () => {
+      const yesterday = new Date()
+      yesterday.setDate(yesterday.getDate() - 1)
+      const yesterdayKey = localDayKey(yesterday)
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: yesterdayKey, inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const yesterdayLine = result.lines.find((l) => l.label === "Yesterday")
+      expect(yesterdayLine).toBeTruthy()
+      expect(yesterdayLine.value).toContain("$0.00")
+      expect(yesterdayLine.value).toContain("0 tokens")
+    })
+
+    it("queries ccusage on each probe", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 150, totalCost: 0.5 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      plugin.probe(ctx)
+      plugin.probe(ctx)
+      expect(ctx.host.ccusage.query).toHaveBeenCalledTimes(2)
+    })
+
+    it("queries ccusage with a 31-day inclusive since window", async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date("2026-02-20T16:00:00.000Z"))
+      try {
+        const ctx = makeProbeCtx({ ccusageResult: okUsage([]) })
+        const plugin = await loadPlugin()
+        plugin.probe(ctx)
+        expect(ctx.host.ccusage.query).toHaveBeenCalled()
+
+        const firstCall = ctx.host.ccusage.query.mock.calls[0][0]
+        const since = new Date()
+        since.setDate(since.getDate() - 30)
+        expect(firstCall.since).toBe(localCompactDayKey(since))
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("includes cache tokens in total", async () => {
+      const todayKey = localDayKey(new Date())
+      const ctx = makeProbeCtx({
+        ccusageResult: okUsage([
+            { date: todayKey, inputTokens: 100, outputTokens: 50, cacheCreationTokens: 200, cacheReadTokens: 300, totalTokens: 650, totalCost: 1.0 },
+          ]),
+      })
+      const plugin = await loadPlugin()
+      const result = plugin.probe(ctx)
+      const todayLine = result.lines.find((l) => l.label === "Today")
+      expect(todayLine).toBeTruthy()
+      expect(todayLine.value).toContain("650 tokens")
+    })
   })
 })
