@@ -86,15 +86,14 @@ export function getTrayPrimaryBars(args: {
         if (primaryLine) {
           const shouldUseCopilotBudgetFallback =
             id === "copilot" &&
-            displayMode === "left" &&
             primaryLine.label === "Premium" &&
             primaryLine.used >= primaryLine.limit
 
           if (shouldUseCopilotBudgetFallback) {
             const budgetLine = findProgressLine(data, "Budget")
             if (budgetLine && budgetLine.limit > 0) {
-              // When premium requests are exhausted, show actual budget spent in the tray bars.
-              fraction = clamp01(budgetLine.used / budgetLine.limit)
+              // Keep tray bars consistent with the global display mode when premium is exhausted.
+              fraction = getFractionFromProgressLine(budgetLine, displayMode)
             } else {
               fraction = getFractionFromProgressLine(primaryLine, displayMode)
             }

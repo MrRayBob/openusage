@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.10 - 2026-02-26
+
+### Bug Fixes
+- Fixed Copilot top menubar progress behavior to respect global `Usage Mode`.
+- When Premium is depleted and the menubar falls back to Budget:
+  - `Left` mode now shows budget remaining.
+  - `Used` mode now shows budget spent.
+
 ## 0.6.9 - 2026-02-26
 
 ### Sync

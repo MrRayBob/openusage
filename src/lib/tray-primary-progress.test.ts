@@ -303,9 +303,56 @@ describe("getTrayPrimaryBars", () => {
     expect(bars).toEqual([])
   })
 
-  it("uses Copilot budget-used fraction when premium is depleted in left mode", () => {
+  it("uses Copilot budget-left fraction when premium is depleted in left mode", () => {
     const bars = getTrayPrimaryBars({
       displayMode: "left",
+      pluginsMeta: [
+        {
+          id: "copilot",
+          name: "Copilot",
+          iconUrl: "",
+          primaryCandidates: ["Premium", "Budget"],
+          lines: [],
+        },
+      ],
+      pluginSettings: { order: ["copilot"], disabled: [] },
+      pluginStates: {
+        copilot: {
+          data: {
+            providerId: "copilot",
+            displayName: "Copilot",
+            iconUrl: "",
+            lines: [
+              {
+                type: "progress",
+                label: "Premium",
+                used: 100,
+                limit: 100,
+                format: { kind: "percent" },
+              },
+              {
+                type: "progress",
+                label: "Budget",
+                used: 1.64,
+                limit: 40,
+                format: { kind: "dollars" },
+              },
+            ],
+          },
+          loading: false,
+          error: null,
+        },
+      },
+    })
+
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.id).toBe("copilot")
+    expect(bars[0]?.fraction).toBeCloseTo(0.959, 3)
+  })
+
+  it("uses Copilot budget-used fraction when premium is depleted in used mode", () => {
+    const bars = getTrayPrimaryBars({
+      displayMode: "used",
       pluginsMeta: [
         {
           id: "copilot",
